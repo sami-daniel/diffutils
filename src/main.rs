@@ -19,6 +19,7 @@ mod macros;
 mod normal_diff;
 mod params;
 mod unified_diff;
+mod side_diff;
 mod utils;
 
 /// # Panics
