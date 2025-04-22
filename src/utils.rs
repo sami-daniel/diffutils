@@ -101,7 +101,7 @@ pub fn report_failure_to_read_input_file(
 /// Limits a string at a certain limiter position. This can break the
 /// encoding of a specific char where it has been cut.
 #[must_use]
-pub fn limited_string<'a>(orig: &'a [u8], limiter: usize) -> &'a [u8] {
+pub fn limited_string(orig: &[u8], limiter: usize) -> &[u8] {
     // TODO: Verify if we broke the enconding of the char
     // when we cut it.
     &orig[..orig.len().min(limiter)]

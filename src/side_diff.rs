@@ -35,7 +35,7 @@ fn push_output(
     Ok(())
 }
 
-pub fn diff(from_file: &Vec<u8>, to_file: &Vec<u8>) -> Vec<u8> {
+pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     //      ^ The left file  ^ The right file
     
     let mut output = stdout().lock();
@@ -47,7 +47,7 @@ pub fn diff(from_file: &Vec<u8>, to_file: &Vec<u8>) -> Vec<u8> {
             Result::Left(left_ln) => {
                 push_output(
                     &mut output,
-                    &limited_string(left_ln, tab_size),
+                    limited_string(left_ln, tab_size),
                     &[],
                     b"<",
                     tab_size,
@@ -58,7 +58,7 @@ pub fn diff(from_file: &Vec<u8>, to_file: &Vec<u8>) -> Vec<u8> {
                 push_output(
                     &mut output,
                     &[],
-                    &limited_string(right_ln, tab_size),
+                    limited_string(right_ln, tab_size),
                     b">",
                     tab_size,
                 )
@@ -67,8 +67,8 @@ pub fn diff(from_file: &Vec<u8>, to_file: &Vec<u8>) -> Vec<u8> {
             Result::Both(left_ln, right_ln) => {
                 push_output(
                     &mut output,
-                    &limited_string(left_ln, tab_size),
-                    &limited_string(right_ln, tab_size),
+                    limited_string(left_ln, tab_size),
+                    limited_string(right_ln, tab_size),
                     b" ",
                     tab_size,
                 )
