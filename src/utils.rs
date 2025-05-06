@@ -249,7 +249,7 @@ mod tests {
 
         #[test]
         fn utf8_multibyte_cut_invalidates() {
-            let orig = "áéíóú".as_bytes(); 
+            let orig = "áéíóú".as_bytes();
             let result = limited_string(&orig, 1);
             // should contain only the first byte of mult-byte char
             assert_eq!(result, vec![0xC3]);

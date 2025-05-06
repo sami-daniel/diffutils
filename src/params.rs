@@ -11,7 +11,7 @@ pub enum Format {
     Unified,
     Context,
     Ed,
-    SideBySide
+    SideBySide,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

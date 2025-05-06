@@ -29,7 +29,7 @@ fn push_output(
     output.write_all(symbol)?; // {symbol}
     output.write_all(b" ")?; // {space_char}
     output.write_all(right_ln)?; // {right_line}
-    
+
     writeln!(output)?; // {EOL}
 
     Ok(())
@@ -37,7 +37,7 @@ fn push_output(
 
 pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     //      ^ The left file  ^ The right file
-    
+
     let mut output = stdout().lock();
     let left_lines: Vec<&[u8]> = from_file.split(|&c| c == b'\n').collect();
     let right_lines: Vec<&[u8]> = to_file.split(|&c| c == b'\n').collect();

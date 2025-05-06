@@ -18,8 +18,8 @@ mod ed_diff;
 mod macros;
 mod normal_diff;
 mod params;
-mod unified_diff;
 mod side_diff;
+mod unified_diff;
 mod utils;
 
 /// # Panics
