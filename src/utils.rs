@@ -102,7 +102,7 @@ pub fn report_failure_to_read_input_file(
 /// encoding of a specific char where it has been cut.
 #[must_use]
 pub fn limited_string(orig: &[u8], limiter: usize) -> &[u8] {
-    // TODO: Verify if we broke the enconding of the char
+    // TODO: Verify if we broke the encoding of the char
     // when we cut it.
     &orig[..orig.len().min(limiter)]
 }
