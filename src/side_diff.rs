@@ -4,6 +4,7 @@
 // files that was distributed with this source code.
 
 use diff::Result;
+use unicode_width::UnicodeWidthChar;
 use std::{
     io::{stdout, StdoutLock, Write},
     vec,
@@ -13,7 +14,7 @@ const SDIFF_HALF_WIDTH: usize = 60;
 const TAB_SIZE: usize = 8;
 
 fn format_tabs_and_spaces(from: usize, to: usize, tab_size: usize, expanded: bool) -> Vec<u8> {
-    let mut output = Vec::new();
+    let mut output = vec![];
     let mut current = from;
 
     if !expanded {
@@ -38,42 +39,83 @@ fn process_half_line(
     max_width: usize,
     expanded: bool,
     tab_size: usize,
-    is_right: bool,
+    is_right: bool
 ) -> std::io::Result<Vec<u8>> {
-    let mut output = Vec::new();
+    let mut output = vec![];
     let mut current_width = 0;
+    let mut is_utf8 = false;
     let iter = s.iter();
-
+    let input = match String::from_utf8(s.to_vec())  {
+        Ok(s) => {
+            is_utf8 = true;
+            s
+        },
+        Err(_) => { String::new() }
+    };
+    
     if is_right && !s.is_empty() {
         output.push(b' ');
     }
 
-    for c in iter {
-        let c_width = 1;
-        if current_width + c_width > max_width {
-            break;
-        }
+    if is_utf8 {
+        drop(iter);
+        let chars = input.chars();
 
-        match *c {
-            b'\t' => {
-                if expanded {
-                    let spaces = tab_size - (current_width % tab_size);
-                    output.extend(vec![b' '; spaces]);
-                    current_width += spaces;
-                } else {
-                    output.push(b'\t');
-                    current_width += tab_size - (current_width % tab_size);
+        for c in chars {
+            if current_width + 1 > max_width {
+                break; // it will never cut a multibyte char
+            }
+    
+            match c {
+                '\t' => {
+                    if expanded {
+                        let spaces = tab_size - (current_width % tab_size);
+                        output.extend(vec![b' '; spaces]);
+                        current_width += spaces;
+                    } else {
+                        output.push(b'\t');
+                        current_width += tab_size - (current_width % tab_size);
+                    }
+                }
+                '\n' => {
+                    break;
+                }
+                '\r' => {
+                    continue;
+                }
+                _ => {
+                    output.write_all(c.to_string().as_bytes())?;
+                    current_width += 1;
                 }
             }
-            b'\n' => {
-                break;
+        }
+    } else {
+        for c in iter {
+            if current_width + 1 > max_width {
+                break; // maybe can cut the character in 2 if it is multibyte
             }
-            b'\r' => {
-                continue;
-            }
-            _ => {
-                output.push(*c);
-                current_width += c_width;
+    
+            match *c {
+                b'\t' => {
+                    if expanded {
+                        let spaces = tab_size - (current_width % tab_size);
+                        output.extend(vec![b' '; spaces]);
+                        current_width += spaces;
+                    } else {
+                        output.push(b'\t');
+                        current_width += tab_size - (current_width % tab_size);
+                    }
+                }
+                b'\n' => {
+                    break;
+                }
+                b'\r' => {
+                    continue;
+                }
+                _ => {
+                    output.push(*c);
+                    current_width += 1;
+                }
             }
         }
     }
@@ -99,6 +141,7 @@ fn push_output(
     symbol: u8,
 ) -> std::io::Result<()> {
     const EXPANDED: bool = false; // should come from the flag -t,
+    
     let left = process_half_line(left_ln, SDIFF_HALF_WIDTH + 1, EXPANDED, TAB_SIZE, false).unwrap();
     let right =
         process_half_line(right_ln, SDIFF_HALF_WIDTH + 1, EXPANDED, TAB_SIZE, true).unwrap();
