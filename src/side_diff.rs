@@ -14,7 +14,7 @@ const SDIFF_HALF_WIDTH: usize = 60;
 const TAB_SIZE: usize = 8;
 
 fn format_tabs_and_spaces(from: usize, to: usize, tab_size: usize, expanded: bool) -> Vec<u8> {
-    let mut output = vec![];
+    let mut output = vec![]; // Fourty buffer created
     let mut current = from;
 
     if !expanded {
@@ -46,7 +46,7 @@ fn process_half_line(
     let mut current_width = 0;
     let mut is_utf8 = false;
     let iter = s.iter();
-    let input = match String::from_utf8(s.to_vec()) {
+    let input = match String::from_utf8(s.to_vec()) { // Third buffer created
         Ok(s) => {
             is_utf8 = true;
             s
