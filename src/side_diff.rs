@@ -13,25 +13,28 @@ use unicode_width::UnicodeWidthChar;
 const SDIFF_HALF_WIDTH: usize = 60;
 const TAB_SIZE: usize = 8;
 
-fn format_tabs_and_spaces(from: usize, to: usize, tab_size: usize, expanded: bool) -> Vec<u8> {
-    let mut output = vec![]; // Fourty buffer created
+fn format_tabs_and_spaces(
+    from: usize,
+    to: usize,
+    tab_size: usize,
+    expanded: bool,
+    buf: &mut Vec<u8>,
+) {
     let mut current = from;
 
     if !expanded {
         while current + (tab_size - current % tab_size) <= to {
             let next_tab = current + (tab_size - current % tab_size);
-            output.push(b'\t');
+            buf.push(b'\t');
             current = next_tab;
         }
     } else {
-        output.extend(vec![b' '; current + (tab_size - current % tab_size)]);
+        buf.extend(vec![b' '; current + (tab_size - current % tab_size)]);
         current = current + (tab_size - current % tab_size);
     }
 
     let remaining_spaces = to - current;
-    output.extend(vec![b' '; remaining_spaces]);
-
-    output
+    buf.extend(vec![b' '; remaining_spaces]);
 }
 
 fn process_half_line(
@@ -45,7 +48,8 @@ fn process_half_line(
     let mut current_width = 0;
     let mut is_utf8 = false;
     let iter = s.iter();
-    let input = match String::from_utf8(s.to_vec()) { // Third buffer created
+    let input = match String::from_utf8(s.to_vec()) {
+        // Third buffer created
         Ok(s) => {
             is_utf8 = true;
             s
@@ -128,13 +132,13 @@ fn process_half_line(
 
     // gnu sdiff do not tabulates the hole empty right line, instead, just keep the line empty
     if !is_right || !s.is_empty() {
-        let padding = format_tabs_and_spaces(
+        format_tabs_and_spaces(
             current_width,
             max_width + if !is_right { 1 } else { 0 },
             tab_size,
             expanded,
+            buf,
         );
-        buf.extend(padding);
     }
 
     Ok(())
