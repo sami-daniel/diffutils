@@ -54,22 +54,27 @@ fn process_half_line(
             break;
         }
 
-        if *c == b'\t' {
-            if expanded {
-                let spaces = tab_size - (current_width % tab_size);
-                output.extend(vec![b' '; spaces]);
-                current_width += spaces;
-            } else {
-                output.push(b'\t');
-                current_width += tab_size - (current_width % tab_size);
+        match *c {
+            b'\t' => {
+                if expanded {
+                    let spaces = tab_size - (current_width % tab_size);
+                    output.extend(vec![b' '; spaces]);
+                    current_width += spaces;
+                } else {
+                    output.push(b'\t');
+                    current_width += tab_size - (current_width % tab_size);
+                }
             }
-        } else {
-            output.push(*c);
-            current_width += c_width;
-        }
-
-        if *c == b'\n' {
-            break;
+            b'\n' => {
+                break;
+            }
+            b'\r' => {
+                continue;
+            }
+            _ => {
+                output.push(*c);
+                current_width += c_width;
+            }
         }
     }
 
@@ -101,6 +106,7 @@ fn push_output(
     output.write_all(&left)?;
     output.write_all(&[symbol])?;
     output.write_all(&right)?;
+
     writeln!(output)?;
 
     Ok(())
