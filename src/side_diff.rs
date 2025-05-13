@@ -3,39 +3,105 @@
 // For the full copyright and license information, please view the LICENSE-*
 // files that was distributed with this source code.
 
-use crate::utils::limited_string;
 use diff::Result;
 use std::{
     io::{stdout, StdoutLock, Write},
     vec,
 };
 
+const SDIFF_HALF_WIDTH: usize = 60;
+const TAB_SIZE: usize = 8;
+
+fn format_tabs_and_spaces(from: usize, to: usize, tab_size: usize, expanded: bool) -> Vec<u8> {
+    let mut output = Vec::new();
+    let mut current = from;
+
+    if !expanded {
+        while current + (tab_size - current % tab_size) <= to {
+            let next_tab = current + (tab_size - current % tab_size);
+            output.push(b'\t');
+            current = next_tab;
+        }
+    } else {
+        output.extend(vec![b' '; current + (tab_size - current % tab_size)]);
+        current = current + (tab_size - current % tab_size);
+    }
+
+    let remaining_spaces = to - current;
+    output.extend(vec![b' '; remaining_spaces]);
+
+    output
+}
+
+fn process_half_line(
+    s: &[u8],
+    max_width: usize,
+    expanded: bool,
+    tab_size: usize,
+    is_right: bool,
+) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut current_width = 0;
+    let iter = s.iter();
+
+    if is_right && !s.is_empty() {
+        output.push(b' ');
+    }
+
+    for c in iter {
+        let c_width = 1;
+        if current_width + c_width > max_width {
+            break;
+        }
+
+        if *c == b'\t' {
+            if expanded {
+                let spaces = tab_size - (current_width % tab_size);
+                output.extend(vec![b' '; spaces]);
+                current_width += spaces;
+            } else {
+                output.push(b'\t');
+                current_width += tab_size - (current_width % tab_size);
+            }
+        } else {
+            output.push(*c);
+            current_width += c_width;
+        }
+
+        if *c == b'\n' {
+            break;
+        }
+    }
+
+    // gnu sdiff do not tabulates the hole empty right line, instead, just keep the line empty
+    if !is_right || !s.is_empty() {
+        let padding = format_tabs_and_spaces(
+            current_width,
+            max_width + if !is_right { 1 } else { 0 },
+            tab_size,
+            expanded
+        );
+        output.extend(padding);
+    }
+
+    Ok(output)
+}
+
 fn push_output(
     output: &mut StdoutLock,
     left_ln: &[u8],
     right_ln: &[u8],
-    symbol: &[u8],
-    tab_size: usize,
+    symbol: u8,
 ) -> std::io::Result<()> {
-    // The reason why this function exists, is that we cannot
-    // assume a enconding for our left or right line, and the
-    // writeln!() macro obligattes us to do it.
+    const EXPANDED: bool = false; // should come from the flag -t,
+    let left = process_half_line(left_ln, SDIFF_HALF_WIDTH + 1, EXPANDED, TAB_SIZE, false).unwrap();
+    let right =
+        process_half_line(right_ln, SDIFF_HALF_WIDTH + 1, EXPANDED, TAB_SIZE, true).unwrap();
 
-    // side-by-side diff usually prints the output like:
-    // {left_line}{tab}{space_char}{symbol(|, < or >)}{space_char}{right_line}{EOL}
-
-    // recalculate how many spaces are nescessary, cause we need to take into
-    // consideration the lenght of the word before print it.
-    let tab_size = (tab_size as isize - left_ln.len() as isize).max(0);
-    let ident = vec![b' '; tab_size as usize];
-    output.write_all(left_ln)?; // {left_line}
-    output.write_all(&ident)?; // {tab}
-    output.write_all(b" ")?; // {space_char}
-    output.write_all(symbol)?; // {symbol}
-    output.write_all(b" ")?; // {space_char}
-    output.write_all(right_ln)?; // {right_line}
-
-    writeln!(output)?; // {EOL}
+    output.write_all(&left)?;
+    output.write_all(&[symbol])?;
+    output.write_all(&right)?;
+    writeln!(output)?;
 
     Ok(())
 }
@@ -46,38 +112,17 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     let mut output = stdout().lock();
     let left_lines: Vec<&[u8]> = from_file.split(|&c| c == b'\n').collect();
     let right_lines: Vec<&[u8]> = to_file.split(|&c| c == b'\n').collect();
-    let tab_size = 61; // for some reason the tab spaces are 61 not 60
+
     for result in diff::slice(&left_lines, &right_lines) {
         match result {
             Result::Left(left_ln) => {
-                push_output(
-                    &mut output,
-                    limited_string(left_ln, tab_size),
-                    &[],
-                    b"<",
-                    tab_size,
-                )
-                .unwrap();
+                push_output(&mut output, left_ln, b"", b'<').unwrap();
             }
             Result::Right(right_ln) => {
-                push_output(
-                    &mut output,
-                    &[],
-                    limited_string(right_ln, tab_size),
-                    b">",
-                    tab_size,
-                )
-                .unwrap();
+                push_output(&mut output, b"", right_ln, b'>').unwrap();
             }
             Result::Both(left_ln, right_ln) => {
-                push_output(
-                    &mut output,
-                    limited_string(left_ln, tab_size),
-                    limited_string(right_ln, tab_size),
-                    b" ",
-                    tab_size,
-                )
-                .unwrap();
+                push_output(&mut output, left_ln, right_ln, b' ').unwrap();
             }
         }
     }
