@@ -4,11 +4,11 @@
 // files that was distributed with this source code.
 
 use diff::Result;
-use unicode_width::UnicodeWidthChar;
 use std::{
     io::{stdout, StdoutLock, Write},
     vec,
 };
+use unicode_width::UnicodeWidthChar;
 
 const SDIFF_HALF_WIDTH: usize = 60;
 const TAB_SIZE: usize = 8;
@@ -39,26 +39,26 @@ fn process_half_line(
     max_width: usize,
     expanded: bool,
     tab_size: usize,
-    is_right: bool
-) -> std::io::Result<Vec<u8>> {
-    let mut output = vec![];
+    is_right: bool,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<()> {
+    let output = buf;
     let mut current_width = 0;
     let mut is_utf8 = false;
     let iter = s.iter();
-    let input = match String::from_utf8(s.to_vec())  {
+    let input = match String::from_utf8(s.to_vec()) {
         Ok(s) => {
             is_utf8 = true;
             s
-        },
-        Err(_) => { String::new() }
+        }
+        Err(_) => String::new(),
     };
-    
+
     if is_right && !s.is_empty() {
         output.push(b' ');
     }
 
     if is_utf8 {
-        drop(iter);
         let chars = input.chars();
 
         for c in chars {
@@ -66,7 +66,7 @@ fn process_half_line(
             if current_width + c_width > max_width {
                 break; // it will never cut a multibyte char
             }
-    
+
             match c {
                 '\t' => {
                     if expanded {
@@ -95,7 +95,7 @@ fn process_half_line(
             if current_width + 1 > max_width {
                 break; // maybe can cut the character in 2 if it is multibyte
             }
-    
+
             match *c {
                 b'\t' => {
                     if expanded {
@@ -127,12 +127,12 @@ fn process_half_line(
             current_width,
             max_width + if !is_right { 1 } else { 0 },
             tab_size,
-            expanded
+            expanded,
         );
         output.extend(padding);
     }
 
-    Ok(output)
+    Ok(())
 }
 
 fn push_output(
@@ -140,16 +140,36 @@ fn push_output(
     left_ln: &[u8],
     right_ln: &[u8],
     symbol: u8,
+    left_ln_buffer: &mut Vec<u8>,
+    right_ln_buffer: &mut Vec<u8>,
 ) -> std::io::Result<()> {
     const EXPANDED: bool = false; // should come from the flag -t,
-    
-    let left = process_half_line(left_ln, SDIFF_HALF_WIDTH + 1, EXPANDED, TAB_SIZE, false).unwrap();
-    let right =
-        process_half_line(right_ln, SDIFF_HALF_WIDTH + 1, EXPANDED, TAB_SIZE, true).unwrap();
 
-    output.write_all(&left)?;
+    left_ln_buffer.clear();
+    right_ln_buffer.clear();
+
+    process_half_line(
+        left_ln,
+        SDIFF_HALF_WIDTH + 1,
+        EXPANDED,
+        TAB_SIZE,
+        false,
+        left_ln_buffer,
+    )
+    .unwrap();
+    process_half_line(
+        right_ln,
+        SDIFF_HALF_WIDTH + 1,
+        EXPANDED,
+        TAB_SIZE,
+        true,
+        right_ln_buffer,
+    )
+    .unwrap();
+
+    output.write_all(left_ln_buffer)?;
     output.write_all(&[symbol])?;
-    output.write_all(&right)?;
+    output.write_all(right_ln_buffer)?;
 
     writeln!(output)?;
 
@@ -163,16 +183,43 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     let left_lines: Vec<&[u8]> = from_file.split(|&c| c == b'\n').collect();
     let right_lines: Vec<&[u8]> = to_file.split(|&c| c == b'\n').collect();
 
+    let mut left_ln_buf = Vec::with_capacity(SDIFF_HALF_WIDTH + 1);
+    let mut right_ln_buf = Vec::with_capacity(SDIFF_HALF_WIDTH + 1);
+
     for result in diff::slice(&left_lines, &right_lines) {
         match result {
             Result::Left(left_ln) => {
-                push_output(&mut output, left_ln, b"", b'<').unwrap();
+                push_output(
+                    &mut output,
+                    left_ln,
+                    b"",
+                    b'<',
+                    &mut left_ln_buf,
+                    &mut right_ln_buf,
+                )
+                .unwrap();
             }
             Result::Right(right_ln) => {
-                push_output(&mut output, b"", right_ln, b'>').unwrap();
+                push_output(
+                    &mut output,
+                    b"",
+                    right_ln,
+                    b'>',
+                    &mut left_ln_buf,
+                    &mut right_ln_buf,
+                )
+                .unwrap();
             }
             Result::Both(left_ln, right_ln) => {
-                push_output(&mut output, left_ln, right_ln, b' ').unwrap();
+                push_output(
+                    &mut output,
+                    left_ln,
+                    right_ln,
+                    b' ',
+                    &mut left_ln_buf,
+                    &mut right_ln_buf,
+                )
+                .unwrap();
             }
         }
     }
