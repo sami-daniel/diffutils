@@ -42,7 +42,6 @@ fn process_half_line(
     is_right: bool,
     buf: &mut Vec<u8>,
 ) -> std::io::Result<()> {
-    let output = buf;
     let mut current_width = 0;
     let mut is_utf8 = false;
     let iter = s.iter();
@@ -55,9 +54,12 @@ fn process_half_line(
     };
 
     if is_right && !s.is_empty() {
-        output.push(b' ');
+        buf.push(b' ');
     }
 
+    //The encoding will probably be compatible with utf8, so we can take advantage
+    // of that to get the size of the columns and iterate without breaking the encoding of anything.
+    // It seems like a good trade, since there is still a fallback in case it is not utf8.
     if is_utf8 {
         let chars = input.chars();
 
@@ -71,21 +73,24 @@ fn process_half_line(
                 '\t' => {
                     if expanded {
                         let spaces = tab_size - (current_width % tab_size);
-                        output.extend(vec![b' '; spaces]);
+                        buf.extend(vec![b' '; spaces]);
                         current_width += spaces;
                     } else {
-                        output.push(b'\t');
+                        buf.push(b'\t');
                         current_width += tab_size - (current_width % tab_size);
                     }
                 }
                 '\n' => {
+                    if is_right {
+                        buf.push(b'\n');
+                    }
                     break;
                 }
                 '\r' => {
                     continue;
                 }
                 _ => {
-                    output.write_all(c.to_string().as_bytes())?;
+                    buf.write_all(c.to_string().as_bytes())?;
                     current_width += c_width;
                 }
             }
@@ -93,17 +98,17 @@ fn process_half_line(
     } else {
         for c in iter {
             if current_width + 1 > max_width {
-                break; // maybe can cut the character in 2 if it is multibyte
+                break; // maybe can cut the character if it is multibyte
             }
 
             match *c {
                 b'\t' => {
                     if expanded {
                         let spaces = tab_size - (current_width % tab_size);
-                        output.extend(vec![b' '; spaces]);
+                        buf.extend(vec![b' '; spaces]);
                         current_width += spaces;
                     } else {
-                        output.push(b'\t');
+                        buf.push(b'\t');
                         current_width += tab_size - (current_width % tab_size);
                     }
                 }
@@ -114,7 +119,7 @@ fn process_half_line(
                     continue;
                 }
                 _ => {
-                    output.push(*c);
+                    buf.push(*c);
                     current_width += 1;
                 }
             }
@@ -129,7 +134,7 @@ fn process_half_line(
             tab_size,
             expanded,
         );
-        output.extend(padding);
+        buf.extend(padding);
     }
 
     Ok(())
@@ -171,6 +176,7 @@ fn push_output(
     output.write_all(&[symbol])?;
     output.write_all(right_ln_buffer)?;
 
+    // gnu side diff only prints the \n on right line if the line contains the char
     writeln!(output)?;
 
     Ok(())
