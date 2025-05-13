@@ -62,7 +62,8 @@ fn process_half_line(
         let chars = input.chars();
 
         for c in chars {
-            if current_width + UnicodeWidthChar::width(c).unwrap_or(1) > max_width {
+            let c_width = UnicodeWidthChar::width(c).unwrap_or(1);
+            if current_width + c_width > max_width {
                 break; // it will never cut a multibyte char
             }
     
@@ -85,7 +86,7 @@ fn process_half_line(
                 }
                 _ => {
                     output.write_all(c.to_string().as_bytes())?;
-                    current_width += 1;
+                    current_width += c_width;
                 }
             }
         }
