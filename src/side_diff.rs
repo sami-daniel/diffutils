@@ -12,7 +12,23 @@ use std::{
 use unicode_width::UnicodeWidthChar;
 
 const GUTTER_WIDTH_MIN: isize = 3; // The MIDDLE mark size
-const WIDTH: isize = 130; // Can be overrided by -w option, just an temporary solution
+const C_WIDTH: isize = 130; // Can be overrided by -w option, just an temporary solution
+
+struct Modifiers {
+    expanded: bool,
+    tab_size: usize,
+    sdiff_half_width: usize,
+}
+
+impl Modifiers {
+    pub fn new(sdiff_half_width: usize, tab_size: usize, expanded: bool) -> Modifiers {
+        Modifiers {
+            expanded,
+            tab_size,
+            sdiff_half_width,
+        }
+    }
+}
 
 fn format_tabs_and_spaces(
     from: usize,
@@ -23,15 +39,19 @@ fn format_tabs_and_spaces(
 ) {
     let mut current = from;
 
-    if !expanded {
-        while current + (tab_size - current % tab_size) <= to {
-            let next_tab = current + (tab_size - current % tab_size);
-            buf.push(b'\t');
-            current = next_tab;
-        }
-    } else {
-        buf.extend(vec![b' '; current + (tab_size - current % tab_size)]);
-        current = current + (tab_size - current % tab_size);
+    if current > to {
+        return;
+    }
+
+    if expanded {
+        buf.extend(vec![b' '; to - current]);
+        return;
+    }
+
+    while current + (tab_size - current % tab_size) <= to {
+        let next_tab = current + (tab_size - current % tab_size);
+        buf.push(b'\t');
+        current = next_tab;
     }
 
     let remaining_spaces = to - current;
@@ -49,8 +69,7 @@ fn process_half_line(
     let mut current_width = 0;
     let mut is_utf8 = false;
     let iter = s.iter();
-    let input = match String::from_utf8(s.to_vec()) {
-        // Third buffer created
+    let input = match String::from_utf8(s.to_vec()) { // third buffer
         Ok(s) => {
             is_utf8 = true;
             s
@@ -152,28 +171,25 @@ fn push_output(
     symbol: u8,
     left_ln_buffer: &mut Vec<u8>,
     right_ln_buffer: &mut Vec<u8>,
-    sdiff_half_width: usize,
-    tab_size: usize,
+    modifiers: &Modifiers,
 ) -> std::io::Result<()> {
-    const EXPANDED: bool = false; // should come from the flag -t,
-
     left_ln_buffer.clear();
     right_ln_buffer.clear();
 
     process_half_line(
         left_ln,
-        sdiff_half_width,
-        EXPANDED,
-        tab_size,
+        modifiers.sdiff_half_width,
+        modifiers.expanded,
+        modifiers.tab_size,
         false,
         left_ln_buffer,
     )
     .unwrap();
     process_half_line(
         right_ln,
-        sdiff_half_width,
-        EXPANDED,
-        tab_size,
+        modifiers.sdiff_half_width,
+        modifiers.expanded,
+        modifiers.tab_size,
         true,
         right_ln_buffer,
     )
@@ -205,17 +221,14 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
 
     let t = /* expanded_tabs ? 1 : tabsize, however, we dont have -t opt, so it will be always 8 */ 8;
     let t_plus_g = t + GUTTER_WIDTH_MIN;
-    // The first part gets the exactly half of WIDTH rounded floor,
-    // then sum with the exactly half of t_plus_g rounded floor,
-    // then, if both WIDTH and t_plus_g are odd, add one
-    let unaligned_off = (WIDTH >> 1) + (t_plus_g >> 1) + (WIDTH & t_plus_g & 1);
-    // unaligned_off - the next of t, rounded floor, cause the sdiff_half_width + GUTTER_WIDTH_MAX
-    // has always to be an multiple of tabsize, to garantee the alignment
+    let unaligned_off = (C_WIDTH >> 1) + (t_plus_g >> 1) + (C_WIDTH & t_plus_g & 1);
     let off = unaligned_off - unaligned_off % t;
-    let sdiff_half_width = (max(0, min(off - GUTTER_WIDTH_MIN, WIDTH - off))) as usize;
+    let sdiff_half_width = (max(0, min(off - GUTTER_WIDTH_MIN, C_WIDTH - off))) as usize;
 
     let mut left_ln_buf = Vec::with_capacity(sdiff_half_width);
     let mut right_ln_buf = Vec::with_capacity(sdiff_half_width);
+
+    let modifiers = Modifiers::new(sdiff_half_width, t as usize, false);
 
     for result in diff::slice(&left_lines, &right_lines) {
         match result {
@@ -227,8 +240,7 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
                     b'<',
                     &mut left_ln_buf,
                     &mut right_ln_buf,
-                    sdiff_half_width,
-                    t as usize,
+                    &modifiers,
                 )
                 .unwrap();
             }
@@ -240,8 +252,7 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
                     b'>',
                     &mut left_ln_buf,
                     &mut right_ln_buf,
-                    sdiff_half_width,
-                    t as usize,
+                    &modifiers,
                 )
                 .unwrap();
             }
@@ -253,8 +264,7 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
                     b' ',
                     &mut left_ln_buf,
                     &mut right_ln_buf,
-                    sdiff_half_width,
-                    t as usize,
+                    &modifiers,
                 )
                 .unwrap();
             }
@@ -262,4 +272,88 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     }
 
     vec![]
+}
+
+#[cfg(test)]
+mod tests {
+    const DEF_TABSIZE: usize = 4;
+
+    use super::*;
+
+    #[test]
+    fn test_format_tabs_and_spaces_expanded_false() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(0, 5, DEF_TABSIZE, false, &mut buf);
+        assert_eq!(buf, vec![b'\t', b' ']);
+    }
+
+    #[test]
+    fn test_format_tabs_and_spaces_expanded_true() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(0, 5, DEF_TABSIZE, true, &mut buf);
+        assert_eq!(buf, vec![b' '; 5]);
+    }
+
+    #[test]
+    fn test_format_tabs_and_spaces_from_greater_than_to() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(6, 3, DEF_TABSIZE, false, &mut buf);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn test_format_from_non_zero_position() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(2, 7, DEF_TABSIZE, false, &mut buf);
+        assert_eq!(buf, vec![b'\t', b' ', b' ', b' ']);
+    }
+
+    #[test]
+    fn test_multiple_full_tabs_needed() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(0, 12, DEF_TABSIZE, false, &mut buf);
+        assert_eq!(buf, vec![b'\t', b'\t', b'\t']);
+    }
+
+    #[test]
+    fn test_uneven_tab_boundary_with_spaces() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(3, 10, DEF_TABSIZE, false, &mut buf);
+        assert_eq!(buf, vec![b'\t', b'\t', b' ', b' ']);
+    }
+
+    #[test]
+    fn test_expanded_true_with_offset() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(3, 9, DEF_TABSIZE, true, &mut buf);
+        assert_eq!(buf, vec![b' '; 6]);
+    }
+
+    #[test]
+    fn test_exact_tab_boundary_from_midpoint() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(4, 8, DEF_TABSIZE, false, &mut buf);
+        assert_eq!(buf, vec![b'\t']);
+    }
+
+    #[test]
+    fn test_mixed_tabs_and_spaces_edge_case() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(5, 9, DEF_TABSIZE, false, &mut buf);
+        assert_eq!(buf, vec![b'\t', b' ']);
+    }
+
+    #[test]
+    fn test_minimal_gap_with_tab() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(7, 8, DEF_TABSIZE, false, &mut buf);
+        assert_eq!(buf, vec![b'\t']);
+    }
+
+    #[test]
+    fn test_expanded_false_with_tab_at_end() {
+        let mut buf = Vec::new();
+        format_tabs_and_spaces(6, 8, DEF_TABSIZE, false, &mut buf);
+        assert_eq!(buf, vec![b'\t']);
+    }
 }
