@@ -64,12 +64,14 @@ fn process_half_line(
     expanded: bool,
     tab_size: usize,
     is_right: bool,
+    white_space_gutter: bool,
     buf: &mut Vec<u8>,
 ) -> std::io::Result<()> {
     let mut current_width = 0;
     let mut is_utf8 = false;
     let iter = s.iter();
-    let input = match String::from_utf8(s.to_vec()) { // third buffer
+    let input = match String::from_utf8(s.to_vec()) {
+        // third buffer
         Ok(s) => {
             is_utf8 = true;
             s
@@ -77,7 +79,7 @@ fn process_half_line(
         Err(_) => String::new(),
     };
 
-    if is_right && !s.is_empty() {
+    if !white_space_gutter {
         buf.push(b' ');
     }
 
@@ -151,10 +153,10 @@ fn process_half_line(
     }
 
     // gnu sdiff do not tabulates the hole empty right line, instead, just keep the line empty
-    if !is_right || !s.is_empty() {
+    if !is_right && !s.is_empty() {
         format_tabs_and_spaces(
             current_width,
-            max_width + if !is_right { 1 } else { 0 },
+            max_width + if white_space_gutter { 3 } else { 1 },
             tab_size,
             expanded,
             buf,
@@ -182,21 +184,24 @@ fn push_output(
         modifiers.expanded,
         modifiers.tab_size,
         false,
+        if symbol == b' ' { true } else { false },
         left_ln_buffer,
-    )
-    .unwrap();
+    )?;
+
     process_half_line(
         right_ln,
         modifiers.sdiff_half_width,
         modifiers.expanded,
         modifiers.tab_size,
         true,
+        false,
         right_ln_buffer,
-    )
-    .unwrap();
+    )?;
 
     output.write_all(left_ln_buffer)?;
-    output.write_all(&[symbol])?;
+    if symbol != b' ' {
+        output.write_all(&[symbol])?;
+    }
     output.write_all(right_ln_buffer)?;
 
     // gnu side diff only prints the \n on right line if the line contains the char
@@ -212,12 +217,11 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     let left_lines: Vec<&[u8]> = from_file.split(|&c| c == b'\n').collect();
     let right_lines: Vec<&[u8]> = to_file.split(|&c| c == b'\n').collect();
 
-    // for some reason that I could not identify, GNU diff
-    // use this calc to calculate the size of  half line
-    // based on options passed (like -w, -t, etc. ). Actually, is pretty uselles, cause we
-    // dont have any size modifiers that can alter this, however
-    // I just want to leave here the calc, since it's not clear
-    // and can make some sort of mess
+    // GNU diff uses this calculation to calculate the size of a half line
+    // based on the options passed (like -w, -t, etc.). It's actually
+    // pretty useless, because we (actually) don't have any size modifiers
+    // that can change this, however I just want to leave the calculatio
+    // n here, since it's not clear and may cause some confusion
 
     let t = /* expanded_tabs ? 1 : tabsize, however, we dont have -t opt, so it will be always 8 */ 8;
     let t_plus_g = t + GUTTER_WIDTH_MIN;
@@ -230,6 +234,28 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
 
     let modifiers = Modifiers::new(sdiff_half_width, t as usize, false);
 
+    /*
+    DISCLAIMER:
+    Currently the diff engine does not produce results like the diff engine used in GNU diff,
+    so some results may be inaccurate. For example, the line difference marker "|", according
+    to the GNU documentation, appears when the same lines (only the actual line, although the
+    relative line may change the result, so occasionally '|' markers appear with the same lines)
+    are different but exist in both files. In the current solution the same result cannot be
+    obtained because the diff engine does not return Both if both exist but are different,
+    but instead returns a Left and a Right for each one, implying that two lines were added
+    and deleted. Furthermore, the GNU diff program apparently stores some internal state
+    (this internal state is just a note about how the diff engine works) about the lines.
+    For example, an added or removed line directly counts in the line query of the original
+    lines to be printed in the output. Because of this imbalance caused by additions and
+    deletions, the characters ( and ) are introduced. They basically represent lines without
+    context, which have lost their pair in the other file due to additions or deletions. Anyway,
+    my goal with this disclaimer is to warn that for some reason, whether it's the diff engine's
+    inability to determine and predict/precalculate the result of GNU's sdiff, with this software it's
+    not possible to reproduce results that are 100% faithful to GNU's, however, the basic premis
+    e of side diff of showing added and removed lines and creating edit scripts is totally possible.
+    More studies are needed to cover GNU diff side by side with 100% accuracy, which is one of
+    the goals of this project : )
+    */
     for result in diff::slice(&left_lines, &right_lines) {
         match result {
             Result::Left(left_ln) => {
@@ -280,80 +306,211 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn test_format_tabs_and_spaces_expanded_false() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(0, 5, DEF_TABSIZE, false, &mut buf);
-        assert_eq!(buf, vec![b'\t', b' ']);
+    mod format_tabs_and_spaces {
+        use super::*;
+
+        #[test]
+        fn test_format_tabs_and_spaces_expanded_false() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(0, 5, DEF_TABSIZE, false, &mut buf);
+            assert_eq!(buf, vec![b'\t', b' ']);
+        }
+
+        #[test]
+        fn test_format_tabs_and_spaces_expanded_true() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(0, 5, DEF_TABSIZE, true, &mut buf);
+            assert_eq!(buf, vec![b' '; 5]);
+        }
+
+        #[test]
+        fn test_format_tabs_and_spaces_from_greater_than_to() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(6, 3, DEF_TABSIZE, false, &mut buf);
+            assert!(buf.is_empty());
+        }
+
+        #[test]
+        fn test_format_from_non_zero_position() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(2, 7, DEF_TABSIZE, false, &mut buf);
+            assert_eq!(buf, vec![b'\t', b' ', b' ', b' ']);
+        }
+
+        #[test]
+        fn test_multiple_full_tabs_needed() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(0, 12, DEF_TABSIZE, false, &mut buf);
+            assert_eq!(buf, vec![b'\t', b'\t', b'\t']);
+        }
+
+        #[test]
+        fn test_uneven_tab_boundary_with_spaces() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(3, 10, DEF_TABSIZE, false, &mut buf);
+            assert_eq!(buf, vec![b'\t', b'\t', b' ', b' ']);
+        }
+
+        #[test]
+        fn test_expanded_true_with_offset() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(3, 9, DEF_TABSIZE, true, &mut buf);
+            assert_eq!(buf, vec![b' '; 6]);
+        }
+
+        #[test]
+        fn test_exact_tab_boundary_from_midpoint() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(4, 8, DEF_TABSIZE, false, &mut buf);
+            assert_eq!(buf, vec![b'\t']);
+        }
+
+        #[test]
+        fn test_mixed_tabs_and_spaces_edge_case() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(5, 9, DEF_TABSIZE, false, &mut buf);
+            assert_eq!(buf, vec![b'\t', b' ']);
+        }
+
+        #[test]
+        fn test_minimal_gap_with_tab() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(7, 8, DEF_TABSIZE, false, &mut buf);
+            assert_eq!(buf, vec![b'\t']);
+        }
+
+        #[test]
+        fn test_expanded_false_with_tab_at_end() {
+            let mut buf = Vec::new();
+            format_tabs_and_spaces(6, 8, DEF_TABSIZE, false, &mut buf);
+            assert_eq!(buf, vec![b'\t']);
+        }
     }
 
-    #[test]
-    fn test_format_tabs_and_spaces_expanded_true() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(0, 5, DEF_TABSIZE, true, &mut buf);
-        assert_eq!(buf, vec![b' '; 5]);
-    }
+    mod process_half_line {
+        use super::*;
 
-    #[test]
-    fn test_format_tabs_and_spaces_from_greater_than_to() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(6, 3, DEF_TABSIZE, false, &mut buf);
-        assert!(buf.is_empty());
-    }
+        #[test]
+        fn test_expanded_tabs_with_offset() {
+            let mut buf = Vec::new();
+            // "a\tb" com tab_size=4, expanded=true, max_width=10
+            process_half_line(b"a\tb", 10, true, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf, b"a   b      "); // a + 3 espaços (preenche tab) + b + 3 espaços (alinhamento)
+        }
 
-    #[test]
-    fn test_format_from_non_zero_position() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(2, 7, DEF_TABSIZE, false, &mut buf);
-        assert_eq!(buf, vec![b'\t', b' ', b' ', b' ']);
-    }
+        #[test]
+        fn test_tab_at_end_of_line() {
+            let mut buf = Vec::new();
+            // Linha termina com tab (expanded=false)
+            process_half_line(b"text\t", 8, false, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf, b"text\t  "); // text (4) + tab (4) + 2 espaços (total 8)
+        }
 
-    #[test]
-    fn test_multiple_full_tabs_needed() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(0, 12, DEF_TABSIZE, false, &mut buf);
-        assert_eq!(buf, vec![b'\t', b'\t', b'\t']);
-    }
+        // Testes para UTF-8 complexo
+        #[test]
+        fn test_utf8_combining_characters() {
+            let mut buf = Vec::new();
+            // "café" (e + combining acute accent, largura total 4)
+            let input = "cafe\u{301}";
+            process_half_line(input.as_bytes(), 5, false, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf, input.as_bytes()); // Não truncado, largura total 4
+        }
 
-    #[test]
-    fn test_uneven_tab_boundary_with_spaces() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(3, 10, DEF_TABSIZE, false, &mut buf);
-        assert_eq!(buf, vec![b'\t', b'\t', b' ', b' ']);
-    }
+        #[test]
+        fn test_utf8_zero_width_char() {
+            let mut buf = Vec::new();
+            // Caractere de largura zero (ex: 'à' com combining mark)
+            let input = "a\u{304}"; // a + combining macron
+            process_half_line(input.as_bytes(), 3, false, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf.len(), 3); // Considerado como 1 caractere de largura
+        }
 
-    #[test]
-    fn test_expanded_true_with_offset() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(3, 9, DEF_TABSIZE, true, &mut buf);
-        assert_eq!(buf, vec![b' '; 6]);
-    }
+        // Testes para truncamento preciso
+        #[test]
+        fn test_truncate_at_exact_width() {
+            let mut buf = Vec::new();
+            process_half_line(b"12345", 5, false, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf, b"12345"); // Preenche exatamente o width
+        }
 
-    #[test]
-    fn test_exact_tab_boundary_from_midpoint() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(4, 8, DEF_TABSIZE, false, &mut buf);
-        assert_eq!(buf, vec![b'\t']);
-    }
+        #[test]
+        fn test_truncate_with_tab_at_edge() {
+            let mut buf = Vec::new();
+            // Tab no limite do truncamento (max_width=8)
+            process_half_line(b"1234\t", 8, false, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf, b"1234\t  "); // 4 + tab (4) + 2 espaços
+        }
 
-    #[test]
-    fn test_mixed_tabs_and_spaces_edge_case() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(5, 9, DEF_TABSIZE, false, &mut buf);
-        assert_eq!(buf, vec![b'\t', b' ']);
-    }
+        // Testes para linhas direitas (right_side)
+        #[test]
+        fn test_right_line_with_leading_space() {
+            let mut buf = Vec::new();
+            process_half_line(b"right", 10, false, 4, true, false, &mut buf).unwrap();
+            assert_eq!(buf[0], b' '); // Espaço inicial adicionado
+            assert_eq!(buf.len(), 10 + 1); // Espaço + conteúdo + padding
+        }
 
-    #[test]
-    fn test_minimal_gap_with_tab() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(7, 8, DEF_TABSIZE, false, &mut buf);
-        assert_eq!(buf, vec![b'\t']);
-    }
+        #[test]
+        fn test_right_line_empty_but_flagged() {
+            let mut buf = Vec::new();
+            process_half_line(b"", 10, false, 4, true, false, &mut buf).unwrap();
+            assert!(buf.is_empty()); // Não adiciona padding para linha direita vazia
+        }
 
-    #[test]
-    fn test_expanded_false_with_tab_at_end() {
-        let mut buf = Vec::new();
-        format_tabs_and_spaces(6, 8, DEF_TABSIZE, false, &mut buf);
-        assert_eq!(buf, vec![b'\t']);
+        // Testes para caracteres de controle
+        #[test]
+        fn test_ignore_carriage_return() {
+            let mut buf = Vec::new();
+            process_half_line(b"line\r\n", 10, false, 4, false, false, &mut buf).unwrap();
+            assert!(!buf.contains(&b'\r')); // \r é ignorado
+        }
+
+        #[test]
+        fn test_newline_in_middle() {
+            let mut buf = Vec::new();
+            process_half_line(b"abc\ndef", 10, false, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf, b"abc       "); // Para após \n
+        }
+
+        // Teste para entrada binária (não UTF-8)
+        #[test]
+        fn test_invalid_utf8_fallback() {
+            let mut buf = Vec::new();
+            let input = &[0xFF, 0xFE]; // Bytes inválidos em UTF-8
+            process_half_line(input, 5, false, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf, input); // Processa como bytes brutos
+        }
+
+        // Teste para alinhamento com tabs e espaços mistos
+        #[test]
+        fn test_mixed_tabs_and_spaces_alignment() {
+            let mut buf = Vec::new();
+            process_half_line(b"\t \t ", 10, false, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf, b"\t \t   "); // Mantém tabs e espaços originais
+        }
+
+        // Teste para max_width zero (edge case)
+        #[test]
+        fn test_max_width_zero() {
+            let mut buf = Vec::new();
+            process_half_line(b"test", 0, false, 4, false, false, &mut buf).unwrap();
+            assert!(buf.is_empty()); // Nada é processado
+        }
+
+        // Teste para tab_size maior que max_width
+        #[test]
+        fn test_tab_size_exceeds_max_width() {
+            let mut buf = Vec::new();
+            process_half_line(b"\t", 3, false, 8, false, false, &mut buf).unwrap();
+            assert_eq!(buf, b"\t  "); // Tab ocupa 8, mas é truncado para 3
+        }
+
+        // Teste para linha com apenas espaços
+        #[test]
+        fn test_line_with_only_spaces() {
+            let mut buf = Vec::new();
+            process_half_line(b"    ", 4, false, 4, false, false, &mut buf).unwrap();
+            assert_eq!(buf, b"    "); // Espaços são mantidos
+        }
     }
 }
