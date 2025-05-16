@@ -41,7 +41,7 @@ impl Config {
         // GNU diff uses this calculation to calculate the size of a half line
         // based on the options passed (like -w, -t, etc.). It's actually
         // pretty useless, because we (actually) don't have any size modifiers
-        // that can change this, however I just want to leave the calculatio
+        // that can change this, however I just want to leave to calculate
         // n here, since it's not clear and may cause some confusion
 
         let c = c_width as isize;
@@ -50,7 +50,7 @@ impl Config {
         let unaligned_off = (c >> 1) + (t_plus_g >> 1) + (c & t_plus_g & 1);
         let off = unaligned_off - unaligned_off % t;
 
-        (max(0, min(off - gutter_width_min as isize, c - off))) as usize
+        max(0, min(off - gutter_width_min as isize, c - off)) as usize
     }
 }
 
@@ -59,7 +59,7 @@ impl<'a> LineFormatter<'a> {
         LineFormatter { config, buf }
     }
 
-    fn format_tabs_and_spaces(&mut self, from: usize, to: usize,) {
+    fn format_tabs_and_spaces(&mut self, from: usize, to: usize) {
         let expanded = self.config.expanded;
         let buf = &mut self.buf;
         let tab_size = self.config.tab_size;
@@ -92,12 +92,12 @@ impl<'a> LineFormatter<'a> {
         white_space_gutter: bool,
     ) -> std::io::Result<()> {
         let expanded = self.config.expanded;
-        let buf = &mut self.buf;
         let tab_size = self.config.tab_size;
         let mut current_width = 0;
         let mut is_utf8 = false;
         let iter = s.iter();
-        let input = match String::from_utf8(s.to_vec()) { // third buffer created
+        let input = match String::from_utf8(s.to_vec()) {
+            // third buffer created
             Ok(s) => {
                 is_utf8 = true;
                 s
@@ -105,14 +105,15 @@ impl<'a> LineFormatter<'a> {
             Err(_) => String::new(),
         };
 
-        if !white_space_gutter {
-            buf.push(b' ');
+        if !white_space_gutter && is_right {
+            self.format_tabs_and_spaces(0, 1);
+            current_width += 1;
         }
 
         // The encoding will probably be compatible with utf8, so we can take advantage
         // of that to get the size of the columns and iterate without breaking the encoding of anything.
         // It seems like a good trade, since there is still a fallback in case it is not utf8.
-        if is_utf8 {
+        if is_utf8 && !s.is_empty() {
             let chars = input.chars();
 
             for c in chars {
@@ -125,29 +126,26 @@ impl<'a> LineFormatter<'a> {
                     '\t' => {
                         if expanded {
                             let spaces = tab_size - (current_width % tab_size);
-                            buf.extend(vec![b' '; spaces]);
+                            self.buf.extend(vec![b' '; spaces]);
                             current_width += spaces;
                         } else {
-                            buf.push(b'\t');
+                            self.buf.push(b'\t');
                             current_width += tab_size - (current_width % tab_size);
                         }
                     }
                     '\n' => {
-                        if is_right {
-                            buf.push(b'\n');
-                        }
                         break;
                     }
                     '\r' => {
                         continue;
                     }
                     _ => {
-                        buf.write_all(c.to_string().as_bytes())?;
+                        self.buf.write_all(c.to_string().as_bytes())?;
                         current_width += c_width;
                     }
                 }
             }
-        } else {
+        } else if !is_utf8 && !s.is_empty() {
             for c in iter {
                 if current_width + 1 > max_width {
                     break; // maybe can cut the character if it is multibyte
@@ -157,10 +155,10 @@ impl<'a> LineFormatter<'a> {
                     b'\t' => {
                         if expanded {
                             let spaces = tab_size - (current_width % tab_size);
-                            buf.extend(vec![b' '; spaces]);
+                            self.buf.extend(vec![b' '; spaces]);
                             current_width += spaces;
                         } else {
-                            buf.push(b'\t');
+                            self.buf.push(b'\t');
                             current_width += tab_size - (current_width % tab_size);
                         }
                     }
@@ -171,18 +169,23 @@ impl<'a> LineFormatter<'a> {
                         continue;
                     }
                     _ => {
-                        buf.push(*c);
+                        self.buf.push(*c);
                         current_width += 1;
                     }
                 }
             }
         }
 
-        // gnu sdiff do not tabulates the hole empty right line, instead, just keep the line empty
-        if !is_right && !s.is_empty() {
+        // gnu sdiff do not tabulate the hole empty right line, instead, just keep the line empty
+        if !is_right || !s.is_empty() {
             self.format_tabs_and_spaces(
                 current_width,
-                max_width + if white_space_gutter { 3 } else { 1 },
+                max_width
+                    + if white_space_gutter {
+                        GUTTER_WIDTH_MIN
+                    } else {
+                        1
+                    },
             );
         }
 
@@ -190,59 +193,48 @@ impl<'a> LineFormatter<'a> {
     }
 }
 
-impl<'a, T> OutputHandler<'a, T> where T: Write {
+impl<'a, T> OutputHandler<'a, T>
+where
+    T: Write,
+{
     fn new(config: Config, output: &'a mut T) -> Self {
         let hw = config.sdiff_half_width;
 
         Self {
             config,
             output,
-            left_ln_buf: Vec::with_capacity(hw),
-            right_ln_buf: Vec::with_capacity(hw)
+            // + 3 cause the left line may expand
+            left_ln_buf: Vec::with_capacity(hw + GUTTER_WIDTH_MIN),
+            right_ln_buf: Vec::with_capacity(hw),
         }
     }
 
-    fn push_output(
-        &mut self, left_ln: &[u8], right_ln: &[u8], symbol: u8
-    ) -> std::io::Result<()> {
-        let white_space_gutter = if symbol == b' ' { true } else { false };
+    fn push_output(&mut self, left_ln: &[u8], right_ln: &[u8], symbol: u8) -> std::io::Result<()> {
+        let white_space_gutter = symbol == b' ';
         let half_width = self.config.sdiff_half_width;
         let output = &mut self.output;
-        
+
         self.left_ln_buf.clear();
         self.right_ln_buf.clear();
-        
+
         let mut left_formatter = LineFormatter::new(&self.config, &mut self.left_ln_buf);
         let mut right_line_formatter = LineFormatter::new(&self.config, &mut self.right_ln_buf);
 
-        left_formatter.process_half_line(
-            left_ln,
-            half_width,
-            false,
-            white_space_gutter,
-        )?;
-    
-        right_line_formatter.process_half_line(
-            right_ln,
-            half_width,
-            true,
-            white_space_gutter
-        )?;
-    
+        left_formatter.process_half_line(left_ln, half_width, false, white_space_gutter)?;
+
+        right_line_formatter.process_half_line(right_ln, half_width, true, white_space_gutter)?;
+
         output.write_all(&self.left_ln_buf)?;
         if symbol != b' ' {
             output.write_all(&[symbol])?;
         }
         output.write_all(&self.right_ln_buf)?;
-    
-        // gnu side diff only prints the \n on right line if the line contains the char
-        if right_ln.ends_with(b"\n") {
-            writeln!(output)?;
-        }
-    
+
+        // TODO: gnu side diff only prints the \n on right line if the line contains the char
+        writeln!(output)?;
+
         Ok(())
     }
-    
 }
 
 pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
@@ -253,7 +245,7 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     let right_lines: Vec<&[u8]> = to_file.split(|&c| c == b'\n').collect();
 
     let config = Config {
-        // C_WIDTH can change be setted with -w,
+        // C_WIDTH can change be set with -w,
         sdiff_half_width: Config::calculate_half_width(C_WIDTH, TAB_SIZE, GUTTER_WIDTH_MIN),
         tab_size: TAB_SIZE, // may change?
         expanded: false,    // should come from option -t
@@ -278,19 +270,15 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     context, which have lost their pair in the other file due to additions or deletions. Anyway,
     my goal with this disclaimer is to warn that for some reason, whether it's the diff engine's
     inability to determine and predict/precalculate the result of GNU's sdiff, with this software it's
-    not possible to reproduce results that are 100% faithful to GNU's, however, the basic premis
+    not possible to reproduce results that are 100% faithful to GNU's, however, the basic premise
     e of side diff of showing added and removed lines and creating edit scripts is totally possible.
     More studies are needed to cover GNU diff side by side with 100% accuracy, which is one of
     the goals of this project : )
     */
     for result in diff::slice(&left_lines, &right_lines) {
         match result {
-            Result::Left(left_ln) => {
-                output_handler.push_output(left_ln, b"", b'<').unwrap()
-            }
-            Result::Right(right_ln) => {
-                output_handler.push_output(b"", right_ln, b'>').unwrap()
-            }
+            Result::Left(left_ln) => output_handler.push_output(left_ln, b"", b'<').unwrap(),
+            Result::Right(right_ln) => output_handler.push_output(b"", right_ln, b'>').unwrap(),
             Result::Both(left_ln, right_ln) => {
                 output_handler.push_output(left_ln, right_ln, b' ').unwrap()
             }
@@ -302,12 +290,16 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    const DEF_TABSIZE: usize = 4;
+    const DEF_TAB_SIZE: usize = 4;
     const CONFIG_E_T: Config = Config {
-        sdiff_half_width: 60, tab_size: DEF_TABSIZE, expanded: true
+        sdiff_half_width: 60,
+        tab_size: DEF_TAB_SIZE,
+        expanded: true,
     };
     const CONFIG_E_F: Config = Config {
-        sdiff_half_width: 60, tab_size: DEF_TABSIZE, expanded: false
+        sdiff_half_width: 60,
+        tab_size: DEF_TAB_SIZE,
+        expanded: false,
     };
 
     use super::*;
@@ -317,9 +309,15 @@ mod tests {
 
         fn build_ln_formatter(expanded: bool, buf: &mut Vec<u8>) -> LineFormatter {
             if expanded {
-                LineFormatter { config: &CONFIG_E_T, buf }
+                LineFormatter {
+                    config: &CONFIG_E_T,
+                    buf,
+                }
             } else {
-                LineFormatter { config: &CONFIG_E_F, buf }
+                LineFormatter {
+                    config: &CONFIG_E_F,
+                    buf,
+                }
             }
         }
 
