@@ -79,7 +79,7 @@ fn process_half_line(
         Err(_) => String::new(),
     };
 
-    if !white_space_gutter {
+    if !white_space_gutter && is_right {
         buf.push(b' ');
     }
 
@@ -194,7 +194,7 @@ fn push_output(
         modifiers.expanded,
         modifiers.tab_size,
         true,
-        false,
+        if symbol == b' ' { true } else { false },
         right_ln_buffer,
     )?;
 
