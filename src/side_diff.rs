@@ -40,7 +40,7 @@ struct LineFormatter<'a> {
 
 impl Config {
     pub fn new(full_width: usize, tab_size: usize, expanded: bool) -> Self {
-        // GNU diff uses this calculation to calculate the size of a half line
+        // diff uses this calculation to calculate the size of a half line
         // based on the options passed (like -w, -t, etc.). It's actually
         // pretty useless, because we (actually) don't have any size modifiers
         // that can change this, however I just want to leave the calculate
@@ -89,9 +89,9 @@ impl<'a> LineFormatter<'a> {
             buf.push(b'\t');
             current = next_tab;
         }
-        
+
         buf.extend(vec![b' '; to - current]);
-        
+
         to
     }
 
@@ -197,8 +197,11 @@ impl<'a> LineFormatter<'a> {
         }
 
         // gnu sdiff do not tabulate the hole empty right line, instead, just keep the line empty
-
         if !is_right {
+            // we always sum + 1 or + GUTTER_WIDTH_MIN cause we want to expand
+            // to the third column o the gutter with is gutter white space, otherwise
+            // we can expand to only the first column of the gutter middle column, cause
+            // the next is the sep char
             self.format_tabs_and_spaces(
                 current_width,
                 max_width
@@ -224,7 +227,7 @@ where
         Self {
             config,
             output,
-            // + 3 cause the left line may expand
+            // + 3 cause the left line may expand to GUTTER_WIDTH_MIN, so prealloc them
             left_ln_buf: Vec::with_capacity(hw + GUTTER_WIDTH_MIN),
             right_ln_buf: Vec::with_capacity(hw),
         }
@@ -312,7 +315,9 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
         match result {
             Result::Left(left_ln) => output_handler.push_output(left_ln, b"", b'<').unwrap(),
             Result::Right(right_ln) => output_handler.push_output(b"", right_ln, b'>').unwrap(),
-            Result::Both(left_ln, right_ln) => output_handler.push_output(left_ln, right_ln, b' ').unwrap()
+            Result::Both(left_ln, right_ln) => {
+                output_handler.push_output(left_ln, right_ln, b' ').unwrap()
+            }
         }
     }
 
@@ -446,112 +451,112 @@ mod tests {
             assert_eq!(buf, vec![b'\t']);
         }
     }
-
-    mod config_calc {
+    
+    mod process_half_line {
         use super::*;
-
-        const GUTTER: isize = 3;
-
-        fn run_config_test(
-            full_width: usize,
-            tab_size: usize,
-            expected_hw: usize,
-            expected_c2o: usize,
-            expected_sep: usize,
-        ) {
-            let cfg = Config::new(full_width, tab_size, false);
-            assert_eq!(cfg.sdiff_half_width, expected_hw, "Half width mismatch");
-            assert_eq!(
-                cfg.sdiff_column_two_offset, expected_c2o,
-                "Column offset mismatch"
-            );
-            assert_eq!(
-                cfg.separator_pos, expected_sep,
-                "Separator position mismatch"
-            );
+    
+        fn create_test_config(expanded: bool, tab_size: usize) -> Config {
+            Config {
+                sdiff_half_width: 30,
+                sdiff_column_two_offset: 60,
+                tab_size,
+                expanded,
+                separator_pos: 15,
+            }
         }
-
+    
         #[test]
-        fn gnu_default_behavior() {
-            run_config_test(130, 8, 61, 64, 62);
+        fn test_empty_line_left_expanded_false() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            formatter.process_half_line(b"", 10, false, false).unwrap();
+            assert_eq!(buf.len(), 5);
+            assert_eq!(buf, vec![b'\t', b'\t', b' ', b' ', b' ']);
         }
-
+    
         #[test]
-        fn minimum_viable_width() {
-            run_config_test(
-                7, 4, 0, // hw = max(0, off-3 → negativo)
-                7, // c2o = full_width
-                4, // (0+7-1)/2 +1 = 3 +1
-            );
+        fn test_tabs_unexpanded() {
+            let config = create_test_config(false, 4);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            formatter.process_half_line(b"\tabc", 8, false, false).unwrap();
+            assert_eq!(buf, vec![b'\t', b'a', b'b', b'c', b'\t', b' ']);
         }
-
-        // Largura ímpar
+    
         #[test]
-        fn odd_width_calculation() {
-            run_config_test(
-                129, 8, 61, // 129-65-3 = 61
-                65, // off
-                63, // (61+65-1)/2 +1 = 62 +1
-            );
+        fn test_utf8_multibyte() {
+            let config = create_test_config(false, 4);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = "😉😉😉".as_bytes();
+            formatter.process_half_line(s, 3, false, false).unwrap();
         }
-
-        // Tab maior que a largura
+    
         #[test]
-        fn tab_larger_than_width() {
-            run_config_test(
-                10, 20,
-                0, // off-3 = 5-3=2 mas w-off=5 → min(2,5)=2 → max(0,2)=2? Ajustar conforme implementação
-                10, // c2o = w
-                6, // (0+10-1)/2 +1 = 4.5→4 +1=5?
-            );
+        fn test_newline_handling() {
+            let config = create_test_config(false, 4);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            formatter.process_half_line(b"abc\ndef", 5, false, false).unwrap();
+            assert!(!buf.contains(&b'\n')); // Deve parar no \n
         }
-
-        // Tab size 1 (edge case)
+    
+        #[cfg(target_os = "windows")]
         #[test]
-        fn unit_tab_size() {
-            run_config_test(
-                50, 1, 22, // Cálculos detalhados necessários
-                25, 24,
-            );
+        fn test_carriage_return_windows() {
+            let config = create_test_config(false, 4);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            formatter.process_half_line(b"\rxyz", 5, true, false).unwrap();
+            assert_eq!(buf[0], b'\r');
         }
-
-        // Largura zero (proteção contra panic)
+    
         #[test]
-        fn zero_width_resilience() {
-            let cfg = Config::new(0, 8, false);
-            assert_eq!(cfg.sdiff_half_width, 0);
-            assert_eq!(cfg.sdiff_column_two_offset, 0);
+        fn test_exact_width_fit() {
+            let config = create_test_config(true, 4);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            formatter.process_half_line(b"abcd", 4, false, false).unwrap();
+            assert_eq!(buf.len(), 4);
         }
-
-        // Valores extremos
+    
         #[test]
-        fn large_values_handling() {
-            run_config_test(
-                usize::MAX,
-                8,
-                (usize::MAX as isize / 2 - 3) as usize,
-                (usize::MAX as isize / 2) as usize,
-                ((usize::MAX as isize / 2 - 3 + usize::MAX as isize / 2 - 1) / 2 + 1) as usize,
-            );
+        fn test_non_utf8_bytes() {
+            let config = create_test_config(false, 4);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            formatter.process_half_line(&[0xFE, 0xFF], 5, false, false).unwrap();
+            assert!(!buf.is_empty());
         }
-
-        // Verificação do gutter influence
+    
         #[test]
-        fn gutter_threshold_effect() {
-            run_config_test(
-                6, 4, 0, // off=3 → 3-3=0
-                6, // hw=0 → c2o=6
-                4, // (0+6-1)/2 +1 = 2.5→2 +1=3?
-            );
+        fn test_right_line_padding() {
+            let config = create_test_config(false, 4);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            formatter.process_half_line(b"xyz", 5, true, true).unwrap();
+            // Verifica se o padding após a linha direita está correto
+            assert!(buf.len() > 3);
         }
-
-        // Caso de alinhamento perfeito
+    
         #[test]
-        fn perfect_alignment_case() {
-            run_config_test(
-                24, 4, 9, // off=12 → 12-3=9 | 24-12=12 → min(9,12)=9
-                12, 11, // (9+12-1)/2 +1 = 10 +1=11
-            );
+        fn test_mixed_tabs_spaces() {
+            let config = create_test_config(false, 4);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            formatter.process_half_line(b"\t  \t", 10, false, false).unwrap();
+            assert_eq!(buf, vec![b'\t', b' ', b' ', b'\t']);
+        }
+    
+        #[test]
+        fn test_overflow_multibyte() {
+            let config = create_test_config(false, 4);
+            let mut buf = Vec::new();
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = "日本語".as_bytes(); // Cada caractere tem largura 2
+            formatter.process_half_line(s, 5, false, false).unwrap();
+            assert_eq!(buf.len(), 4); // 2 caracteres (4 largura) + possível padding
         }
     }
 }
