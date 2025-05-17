@@ -29,7 +29,7 @@ where
 {
     output: &'a mut T,
     config: Config,
-    left_ln_buf: Vec<u8>,
+    left_ln_buf: Vec<u8>, // May we waisting a lot of memory doing this, instead of simply push to stdout
     right_ln_buf: Vec<u8>,
 }
 
@@ -69,19 +69,19 @@ impl<'a> LineFormatter<'a> {
         Self { config, buf }
     }
 
-    fn format_tabs_and_spaces(&mut self, from: usize, to: usize) -> usize {
+    fn format_tabs_and_spaces(&mut self, from: usize, to: usize) {
         let expanded = self.config.expanded;
         let buf = &mut self.buf;
         let tab_size = self.config.tab_size;
         let mut current = from;
 
         if current > to {
-            return to;
+            return;
         }
 
         if expanded {
             buf.extend(vec![b' '; to - current]);
-            return to;
+            return;
         }
 
         while current + (tab_size - current % tab_size) <= to {
@@ -91,8 +91,6 @@ impl<'a> LineFormatter<'a> {
         }
 
         buf.extend(vec![b' '; to - current]);
-
-        to
     }
 
     fn process_half_line(
@@ -102,6 +100,14 @@ impl<'a> LineFormatter<'a> {
         is_right: bool,
         white_space_gutter: bool,
     ) -> std::io::Result<()> {
+        if max_width > self.config.sdiff_half_width {
+            return Ok(());
+        }
+        
+        if max_width > self.config.sdiff_column_two_offset && !is_right {
+            return Ok(());
+        }
+        
         let expanded = self.config.expanded;
         let tab_size = self.config.tab_size;
         let sdiff_column_two_offset = self.config.sdiff_column_two_offset;
@@ -120,7 +126,12 @@ impl<'a> LineFormatter<'a> {
         // the encoding will probably be compatible with utf8, so we can take advantage
         // of that to get the size of the columns and iterate without breaking the encoding of anything.
         // It seems like a good trade, since there is still a fallback in case it is not utf8.
-        if is_utf8 && !s.is_empty() {
+        // But I think it would be better if we used some lib that would allow us to handle this
+        // in the best way possible, in order to avoid overhead (currently 2 for loops are needed).
+        // There is a library called mcel (mcel.h) that is used in GNU diff, but the documentation
+        // about it is very scarce, nor is its use documented on the internet. In fact, from my
+        // research I didn't even find any information about it in the GNU lib's own documentation.
+        if is_utf8 {
             // avoiding the creation of chars variables
             let chars = input.chars();
 
@@ -134,26 +145,28 @@ impl<'a> LineFormatter<'a> {
                     '\t' => {
                         if expanded {
                             let spaces = tab_size - (current_width % tab_size);
-                            self.buf.extend(vec![b' '; spaces]);
-                            current_width += spaces;
+                            if current_width + spaces <= max_width {
+                                self.buf.extend(vec![b' '; spaces]);
+                                current_width += spaces;
+                            }
                         } else {
-                            self.buf.push(b'\t');
-                            current_width += tab_size - (current_width % tab_size);
+                            if current_width + tab_size - (current_width % tab_size) <= max_width {
+                                self.buf.push(b'\t');
+                                current_width += tab_size - (current_width % tab_size);
+                            }
                         }
                     }
                     '\n' => {
                         break;
                     }
-                    // I really don't see any reason to compile
-                    // this except on windows
-                    #[cfg(any(target_os = "windows", debug_assertions))]
                     '\r' => {
                         self.buf.push(b'\r');
-                        if is_right {
-                            self.format_tabs_and_spaces(0, sdiff_column_two_offset);
-                        }
+                        self.format_tabs_and_spaces(0, sdiff_column_two_offset);
                         current_width = 0;
-                    }
+                    },
+                    '\0' | '\x07' | '\x0C' | '\x0B' => {
+                        self.buf.push(c as u8);
+                    },
                     _ => {
                         self.buf.write_all(c.to_string().as_bytes())?;
                         current_width += c_width;
@@ -170,24 +183,29 @@ impl<'a> LineFormatter<'a> {
                     b'\t' => {
                         if expanded {
                             let spaces = tab_size - (current_width % tab_size);
-                            self.buf.extend(vec![b' '; spaces]);
-                            current_width += spaces;
+                            if current_width + spaces <= max_width {
+                                self.buf.extend(vec![b' '; spaces]);
+                                current_width += spaces;
+                            }
                         } else {
-                            self.buf.push(b'\t');
-                            current_width += tab_size - (current_width % tab_size);
+                            if current_width + tab_size - (current_width % tab_size) <= max_width {
+                                self.buf.push(b'\t');
+                                current_width += tab_size - (current_width % tab_size);
+                            }
                         }
                     }
                     b'\n' => {
                         break;
                     }
-                    #[cfg(any(target_os = "windows", debug_assertions))]
                     b'\r' => {
                         self.buf.push(b'\r');
-                        if is_right {
-                            self.format_tabs_and_spaces(0, sdiff_column_two_offset);
-                        }
+                        self.format_tabs_and_spaces(0, sdiff_column_two_offset);
                         current_width = 0;
-                    }
+                    },
+                    b'\0' | b'\x07' | b'\x0C' | b'\x0B' => {
+                        // width 0, just print it
+                        self.buf.push(*c);
+                    },
                     _ => {
                         self.buf.push(*c);
                         current_width += 1;
@@ -234,17 +252,25 @@ where
     }
 
     fn push_output(&mut self, left_ln: &[u8], right_ln: &[u8], symbol: u8) -> std::io::Result<()> {
+        self.left_ln_buf.clear();
+        self.right_ln_buf.clear();
+        let mut left_formatter = LineFormatter::new(&self.config, &mut self.left_ln_buf);
+        let mut right_line_formatter = LineFormatter::new(&self.config, &mut self.right_ln_buf);
         let white_space_gutter = symbol == b' ';
         let half_width = self.config.sdiff_half_width;
         let column_two_offset = self.config.sdiff_column_two_offset;
         let separator_pos = self.config.separator_pos;
         let output = &mut self.output;
+        let mut put_new_line = false;
 
-        self.left_ln_buf.clear();
-        self.right_ln_buf.clear();
-
-        let mut left_formatter = LineFormatter::new(&self.config, &mut self.left_ln_buf);
-        let mut right_line_formatter = LineFormatter::new(&self.config, &mut self.right_ln_buf);
+        // this also evolves the separator |, but we can ignore it
+        // at this point, since we don't have the | sep (yet)
+        if !left_ln.is_empty() {
+            put_new_line = put_new_line || (left_ln.last() == Some(&b'\n'));
+        }
+        if !right_ln.is_empty() {
+            put_new_line = put_new_line || (right_ln.last() == Some(&b'\n'));
+        }
 
         left_formatter.process_half_line(left_ln, half_width, false, white_space_gutter)?;
         right_line_formatter.process_half_line(right_ln, half_width, true, white_space_gutter)?;
@@ -252,7 +278,7 @@ where
         output.write_all(&self.left_ln_buf)?;
         if symbol != b' ' {
             // the diff always want to put all tabs possible in the usable are,
-            // even in the middle space beetween the gutters if possible.
+            // even in the middle space between the gutters if possible.
 
             let mut separator_buffer = vec![];
             let mut separator_formatter = LineFormatter::new(&self.config, &mut separator_buffer);
@@ -263,8 +289,9 @@ where
         }
         output.write_all(&self.right_ln_buf)?;
 
-        // TODO: gnu side diff only prints the \n on right line if the line contains the char
-        writeln!(output)?;
+        if put_new_line {
+            writeln!(output)?;
+        }
 
         Ok(())
     }
@@ -276,7 +303,9 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     let mut output = stdout().lock();
     let mut left_lines: Vec<&[u8]> = from_file.split(|&c| c == b'\n').collect();
     let mut right_lines: Vec<&[u8]> = to_file.split(|&c| c == b'\n').collect();
-
+    let config = Config::new(FULL_WIDTH, TAB_SIZE, false);
+    let mut output_handler = OutputHandler::new(config, &mut output);
+    
     if left_lines.last() == Some(&&b""[..]) {
         left_lines.pop();
     }
@@ -284,10 +313,6 @@ pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
     if right_lines.last() == Some(&&b""[..]) {
         right_lines.pop();
     }
-
-    let config = Config::new(FULL_WIDTH, TAB_SIZE, false);
-
-    let mut output_handler = OutputHandler::new(config, &mut output);
 
     /*
     DISCLAIMER:
@@ -451,10 +476,10 @@ mod tests {
             assert_eq!(buf, vec![b'\t']);
         }
     }
-    
+
     mod process_half_line {
         use super::*;
-    
+
         fn create_test_config(expanded: bool, tab_size: usize) -> Config {
             Config {
                 sdiff_half_width: 30,
@@ -464,99 +489,373 @@ mod tests {
                 separator_pos: 15,
             }
         }
-    
+
         #[test]
         fn test_empty_line_left_expanded_false() {
             let config = create_test_config(false, DEF_TAB_SIZE);
-            let mut buf = Vec::new();
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
             formatter.process_half_line(b"", 10, false, false).unwrap();
             assert_eq!(buf.len(), 5);
             assert_eq!(buf, vec![b'\t', b'\t', b' ', b' ', b' ']);
         }
-    
+
         #[test]
         fn test_tabs_unexpanded() {
-            let config = create_test_config(false, 4);
-            let mut buf = Vec::new();
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
-            formatter.process_half_line(b"\tabc", 8, false, false).unwrap();
+            formatter
+                .process_half_line(b"\tabc", 8, false, false)
+                .unwrap();
             assert_eq!(buf, vec![b'\t', b'a', b'b', b'c', b'\t', b' ']);
         }
-    
+
         #[test]
         fn test_utf8_multibyte() {
-            let config = create_test_config(false, 4);
-            let mut buf = Vec::new();
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
             let s = "😉😉😉".as_bytes();
             formatter.process_half_line(s, 3, false, false).unwrap();
+            let mut r = vec![];
+            r.write_all("😉\t".as_bytes()).unwrap();
+            assert_eq!(buf, r)
         }
-    
+
         #[test]
         fn test_newline_handling() {
-            let config = create_test_config(false, 4);
-            let mut buf = Vec::new();
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
-            formatter.process_half_line(b"abc\ndef", 5, false, false).unwrap();
-            assert!(!buf.contains(&b'\n')); // Deve parar no \n
+            formatter
+                .process_half_line(b"abc\ndef", 5, false, false)
+                .unwrap();
+            assert_eq!(buf, vec![b'a', b'b', b'c', b'\t', b' ', b' ']);
         }
-    
-        #[cfg(target_os = "windows")]
+
         #[test]
-        fn test_carriage_return_windows() {
-            let config = create_test_config(false, 4);
-            let mut buf = Vec::new();
+        fn test_carriage_return() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
-            formatter.process_half_line(b"\rxyz", 5, true, false).unwrap();
-            assert_eq!(buf[0], b'\r');
+            formatter
+                .process_half_line(b"\rxyz", 5, true, false)
+                .unwrap();
+            let mut r = vec![b'\r'];
+            r.extend(vec![b'\t'; 15]);
+            r.extend(vec![b'x', b'y', b'z']);
+            assert_eq!(buf, r);
         }
-    
+
         #[test]
         fn test_exact_width_fit() {
-            let config = create_test_config(true, 4);
-            let mut buf = Vec::new();
+            let config = create_test_config(true, DEF_TAB_SIZE);
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
-            formatter.process_half_line(b"abcd", 4, false, false).unwrap();
-            assert_eq!(buf.len(), 4);
+            formatter
+                .process_half_line(b"abcd", 4, false, false)
+                .unwrap();
+            assert_eq!(buf.len(), 5);
+            assert_eq!(buf, b"abcd ".to_vec());
         }
-    
+
         #[test]
         fn test_non_utf8_bytes() {
-            let config = create_test_config(false, 4);
-            let mut buf = Vec::new();
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
-            formatter.process_half_line(&[0xFE, 0xFF], 5, false, false).unwrap();
-            assert!(!buf.is_empty());
+            // ISO-8859-1
+            formatter
+                .process_half_line(&[0x63, 0x61, 0x66, 0xE9], 5, false, false)
+                .unwrap();
+            assert_eq!(&buf, &[0x63, 0x61, 0x66, 0xE9, b' ', b' ']);
+            assert!(String::from_utf8(buf).is_err());
         }
-    
+
+        #[test]
+        fn test_non_utf8_bytes_ignore_padding_bytes() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let utf32le_bytes = [
+                0x63, 0x00, 0x00, 0x00, // 'c'
+                0x61, 0x00, 0x00, 0x00, // 'a'
+                0x66, 0x00, 0x00, 0x00, // 'f'
+                0xE9, 0x00, 0x00, 0x00, // 'é'
+            ];
+            // utf8 little endiand 32 bits (or 4 bytes per char)
+            formatter
+                .process_half_line(&utf32le_bytes, 6, false, false)
+                .unwrap();
+            let mut r = utf32le_bytes.to_vec();
+            r.extend(vec![b' '; 3]);
+            assert_eq!(buf, r);
+        }
+
+        #[test]
+        fn test_non_utf8_non_preserve_ascii_bytes_cut() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let gb18030 = b"\x63\x61\x66\xA8\x80"; // some random chinese encoding
+            //                                   ^ é char, start multi byte
+            formatter
+                .process_half_line(gb18030, 4, false, false)
+                .unwrap();
+            assert_eq!(buf, b"\x63\x61\x66\xA8 "); // break the encoding of 'é' letter
+        }
+
         #[test]
         fn test_right_line_padding() {
-            let config = create_test_config(false, 4);
-            let mut buf = Vec::new();
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
             formatter.process_half_line(b"xyz", 5, true, true).unwrap();
-            // Verifica se o padding após a linha direita está correto
-            assert!(buf.len() > 3);
+            assert_eq!(buf.len(), 3);
         }
-    
+
         #[test]
         fn test_mixed_tabs_spaces() {
-            let config = create_test_config(false, 4);
-            let mut buf = Vec::new();
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
-            formatter.process_half_line(b"\t  \t", 10, false, false).unwrap();
-            assert_eq!(buf, vec![b'\t', b' ', b' ', b'\t']);
+            formatter
+                .process_half_line(b"\t  \t", 10, false, false)
+                .unwrap();
+            assert_eq!(buf, vec![b'\t', b' ', b' ', b'\t', b' ', b' ', b' ']);
         }
-    
+
         #[test]
         fn test_overflow_multibyte() {
-            let config = create_test_config(false, 4);
-            let mut buf = Vec::new();
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
-            let s = "日本語".as_bytes(); // Cada caractere tem largura 2
+            let s = "日本語".as_bytes();
             formatter.process_half_line(s, 5, false, false).unwrap();
-            assert_eq!(buf.len(), 4); // 2 caracteres (4 largura) + possível padding
+            assert_eq!(buf, "日本  ".as_bytes());
+        }
+
+        #[test]
+        fn test_white_space_gutter() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"abc";
+            formatter.process_half_line(s, 3, false, true).unwrap();
+            assert_eq!(buf, b"abc\t  ");
+        }
+        
+        #[test]
+        fn test_expanded_true() {
+            let config = create_test_config(true, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"abc";
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            assert_eq!(buf, b"abc        ")
+        }
+        
+        #[test]
+        fn test_expanded_true_with_gutter() {
+            let config = create_test_config(true, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"abc";
+            formatter.process_half_line(s, 10, false, true).unwrap();
+            assert_eq!(buf, b"abc          ")
+        }
+        
+        #[test]
+        fn test_width0_chars() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"abc\0\x0B\x07\x0C";
+            formatter.process_half_line(s, 4, false, false).unwrap();
+            assert_eq!(buf, b"abc\0\x0B\x07\x0C\t ")
+        }
+        
+        #[test]
+        fn test_left_empty_white_space_gutter() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"";
+            formatter.process_half_line(s, 9, false, true).unwrap();
+            assert_eq!(buf, b"\t\t\t");
+        }
+
+        #[test]
+        fn test_s_size_eq_max_width_p1() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"abcdefghij";
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            assert_eq!(buf, b"abcdefghij ");
+        }
+
+        #[test]
+        fn test_mixed_tabs_and_spaces_inversion() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b" \t \t ";
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            assert_eq!(buf, b" \t \t   ");
+        }
+
+        #[test]
+        fn test_expanded_with_tabs() {
+            let config = create_test_config(true, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b" \t \t ";
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            assert_eq!(buf, b"           ");
+        }
+
+        #[test]
+        fn test_expanded_with_tabs_and_space_gutter() {
+            let config = create_test_config(true, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b" \t \t ";
+            formatter.process_half_line(s, 10, false, true).unwrap();
+            assert_eq!(buf, b"             ");
+        }
+
+        #[test]
+        fn test_zero_width_unicode_chars() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = "\u{200B}".as_bytes();
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            assert_eq!(buf, "\u{200B}\t\t   ".as_bytes());
+        }
+
+        #[test]
+        fn test_multiple_carriage_returns() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"\r\r";
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            let mut r = vec![b'\r'];
+            r.extend(vec![b'\t'; 15]);
+            r.push(b'\r');
+            r.extend(vec![b'\t'; 15]);
+            r.extend(vec![b'\t'; 2]);
+            r.extend(vec![b' '; 3]);
+            assert_eq!(buf, r);
+        }
+
+        #[test]
+        fn test_multiple_carriage_returns_is_right_true() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"\r\r";
+            formatter.process_half_line(s, 10, true, false).unwrap();
+            let mut r = vec![b'\r'];
+            r.extend(vec![b'\t'; 15]);
+            r.push(b'\r');
+            r.extend(vec![b'\t'; 15]);
+            assert_eq!(buf, r);
+        }
+
+        #[test]
+        fn test_mixed_invalid_utf8_with_valid() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"abc\xFF\xFEdef";
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            assert!(String::from_utf8(s.to_vec()).is_err());
+            assert_eq!(buf, b"abc\xFF\xFEdef   ");
+        }
+        
+        #[test]
+        fn test_max_width_zero() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"foo bar";
+            formatter.process_half_line(s, 0, false, false).unwrap();
+            assert_eq!(buf, vec![b' ']);
+        }
+        
+        #[test]
+        fn test_line_only_with_tabs() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"\t\t\t";
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            assert_eq!(buf, vec![b'\t', b'\t', b' ', b' ', b' '])
+        }
+
+        #[test]
+        fn test_tabs_expanded() {
+            let config = create_test_config(true, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"\t\t\t";
+            formatter.process_half_line(s, 12, false, false).unwrap();
+            assert_eq!(buf, b" ".repeat(13));
+        }
+
+        #[test]
+        fn test_mixed_tabs() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"a\tb\tc\t";
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            assert_eq!(buf, b"a\tb\tc  ");
+        }
+
+        #[test]
+        fn test_mixed_tabs_with_gutter() {
+            let config = create_test_config(false, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"a\tb\tc\t";
+            formatter.process_half_line(s, 10, false, true).unwrap();
+            assert_eq!(buf, b"a\tb\tc\t ");
+        }
+
+        #[test]
+        fn test_mixed_tabs_expanded() {
+            let config = create_test_config(true, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"a\tb\tc\t";
+            formatter.process_half_line(s, 10, false, false).unwrap();
+            assert_eq!(buf, b"a   b   c  ");
+        }
+
+        #[test]
+        fn test_mixed_tabs_expanded_with_gutter() {
+            let config = create_test_config(true, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"a\tb\tc\t";
+            formatter.process_half_line(s, 10, false, true).unwrap();
+            assert_eq!(buf, b"a   b   c    ");
+        }
+        
+        #[test]
+        fn test_break_if_invalid_max_width() {
+            let config = create_test_config(true, DEF_TAB_SIZE);
+            let mut buf = vec![];
+            let mut formatter = LineFormatter::new(&config, &mut buf);
+            let s = b"a\tb\tc\t";
+            formatter.process_half_line(s, 61, false, true).unwrap();
+            assert_eq!(buf, b"");
+            assert_eq!(buf.len(), 0);
         }
     }
 }
