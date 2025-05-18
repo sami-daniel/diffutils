@@ -6,7 +6,7 @@
 use core::cmp::{max, min};
 use diff::Result;
 use std::{
-    io::{stdout, Write},
+    io::{Write},
     vec,
 };
 use unicode_width::UnicodeWidthChar;
@@ -103,11 +103,11 @@ impl<'a> LineFormatter<'a> {
         if max_width > self.config.sdiff_half_width {
             return Ok(());
         }
-        
+
         if max_width > self.config.sdiff_column_two_offset && !is_right {
             return Ok(());
         }
-        
+
         let expanded = self.config.expanded;
         let tab_size = self.config.tab_size;
         let sdiff_column_two_offset = self.config.sdiff_column_two_offset;
@@ -163,10 +163,10 @@ impl<'a> LineFormatter<'a> {
                         self.buf.push(b'\r');
                         self.format_tabs_and_spaces(0, sdiff_column_two_offset);
                         current_width = 0;
-                    },
+                    }
                     '\0' | '\x07' | '\x0C' | '\x0B' => {
                         self.buf.push(c as u8);
-                    },
+                    }
                     _ => {
                         self.buf.write_all(c.to_string().as_bytes())?;
                         current_width += c_width;
@@ -201,11 +201,11 @@ impl<'a> LineFormatter<'a> {
                         self.buf.push(b'\r');
                         self.format_tabs_and_spaces(0, sdiff_column_two_offset);
                         current_width = 0;
-                    },
+                    }
                     b'\0' | b'\x07' | b'\x0C' | b'\x0B' => {
                         // width 0, just print it
                         self.buf.push(*c);
-                    },
+                    }
                     _ => {
                         self.buf.push(*c);
                         current_width += 1;
@@ -297,15 +297,14 @@ where
     }
 }
 
-pub fn diff(from_file: &[u8], to_file: &[u8]) -> Vec<u8> {
+pub fn diff<T: Write>(from_file: &[u8], to_file: &[u8], output: &mut T) -> Vec<u8> {
     //      ^ The left file  ^ The right file
 
-    let mut output = stdout().lock();
     let mut left_lines: Vec<&[u8]> = from_file.split(|&c| c == b'\n').collect();
     let mut right_lines: Vec<&[u8]> = to_file.split(|&c| c == b'\n').collect();
     let config = Config::new(FULL_WIDTH, TAB_SIZE, false);
-    let mut output_handler = OutputHandler::new(config, &mut output);
-    
+    let mut output_handler = OutputHandler::new(config, output);
+
     if left_lines.last() == Some(&&b""[..]) {
         left_lines.pop();
     }
@@ -599,7 +598,7 @@ mod tests {
             let mut buf = vec![];
             let mut formatter = LineFormatter::new(&config, &mut buf);
             let gb18030 = b"\x63\x61\x66\xA8\x80"; // some random chinese encoding
-            //                                   ^ é char, start multi byte
+                                                   //                                   ^ é char, start multi byte
             formatter
                 .process_half_line(gb18030, 4, false, false)
                 .unwrap();
@@ -645,7 +644,7 @@ mod tests {
             formatter.process_half_line(s, 3, false, true).unwrap();
             assert_eq!(buf, b"abc\t  ");
         }
-        
+
         #[test]
         fn test_expanded_true() {
             let config = create_test_config(true, DEF_TAB_SIZE);
@@ -655,7 +654,7 @@ mod tests {
             formatter.process_half_line(s, 10, false, false).unwrap();
             assert_eq!(buf, b"abc        ")
         }
-        
+
         #[test]
         fn test_expanded_true_with_gutter() {
             let config = create_test_config(true, DEF_TAB_SIZE);
@@ -665,7 +664,7 @@ mod tests {
             formatter.process_half_line(s, 10, false, true).unwrap();
             assert_eq!(buf, b"abc          ")
         }
-        
+
         #[test]
         fn test_width0_chars() {
             let config = create_test_config(false, DEF_TAB_SIZE);
@@ -675,7 +674,7 @@ mod tests {
             formatter.process_half_line(s, 4, false, false).unwrap();
             assert_eq!(buf, b"abc\0\x0B\x07\x0C\t ")
         }
-        
+
         #[test]
         fn test_left_empty_white_space_gutter() {
             let config = create_test_config(false, DEF_TAB_SIZE);
@@ -776,7 +775,7 @@ mod tests {
             assert!(String::from_utf8(s.to_vec()).is_err());
             assert_eq!(buf, b"abc\xFF\xFEdef   ");
         }
-        
+
         #[test]
         fn test_max_width_zero() {
             let config = create_test_config(false, DEF_TAB_SIZE);
@@ -786,7 +785,7 @@ mod tests {
             formatter.process_half_line(s, 0, false, false).unwrap();
             assert_eq!(buf, vec![b' ']);
         }
-        
+
         #[test]
         fn test_line_only_with_tabs() {
             let config = create_test_config(false, DEF_TAB_SIZE);
@@ -846,7 +845,7 @@ mod tests {
             formatter.process_half_line(s, 10, false, true).unwrap();
             assert_eq!(buf, b"a   b   c    ");
         }
-        
+
         #[test]
         fn test_break_if_invalid_max_width() {
             let config = create_test_config(true, DEF_TAB_SIZE);
