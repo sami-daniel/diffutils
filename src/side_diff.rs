@@ -5,15 +5,16 @@
 
 use core::cmp::{max, min};
 use diff::Result;
-use std::{
-    io::{Write},
-    vec,
-};
-use unicode_width::UnicodeWidthChar;
+use std::{io::Write, vec};
+use unicode_width::UnicodeWidthStr;
 
 const GUTTER_WIDTH_MIN: usize = 3;
 const FULL_WIDTH: usize = 130;
 const TAB_SIZE: usize = 8;
+
+struct CharIter<'a> {
+    current: &'a [u8],
+}
 
 struct Config {
     sdiff_half_width: usize,
@@ -36,6 +37,54 @@ where
 struct LineFormatter<'a> {
     config: &'a Config,
     buf: &'a mut Vec<u8>,
+}
+
+impl<'a> From<&'a [u8]> for CharIter<'a> {
+    fn from(value: &'a [u8]) -> Self {
+        CharIter { current: value }
+    }
+}
+
+impl<'a> Iterator for CharIter<'a> {
+    // (bytes for the next char, visible width)
+    type Item = (&'a [u8], usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let max = self.current.len().min(4);
+
+        // We reached the end.
+        if max == 0 {
+            return None;
+        }
+
+        // Try to find the next utf-8 character, if present in the next 4 bytes.
+        let mut index = 1;
+        let mut view = &self.current[..index];
+        let mut char = str::from_utf8(view);
+        while char.is_err() {
+            index += 1;
+            if index > max {
+                break;
+            }
+            view = &self.current[..index];
+            char = str::from_utf8(view)
+        }
+
+        match char {
+            Ok(c) => {
+                self.current = self
+                    .current
+                    .get(view.len()..)
+                    .unwrap_or(&self.current[0..0]);
+                Some((view, UnicodeWidthStr::width(c)))
+            }
+            Err(_) => {
+                // We did not find an utf-8 char within the next 4 bytes, return the single byte.
+                self.current = &self.current[1..];
+                Some((&view[..1], 1))
+            }
+        }
+    }
 }
 
 impl Config {
@@ -100,6 +149,22 @@ impl<'a> LineFormatter<'a> {
         is_right: bool,
         white_space_gutter: bool,
     ) -> std::io::Result<()> {
+        if s.is_empty() {
+            if !is_right {
+                self.format_tabs_and_spaces(
+                    0,
+                    max_width
+                        + if white_space_gutter {
+                            GUTTER_WIDTH_MIN
+                        } else {
+                            1
+                        },
+                );
+            }
+
+            return Ok(());
+        }
+
         if max_width > self.config.sdiff_half_width {
             return Ok(());
         }
@@ -112,16 +177,7 @@ impl<'a> LineFormatter<'a> {
         let tab_size = self.config.tab_size;
         let sdiff_column_two_offset = self.config.sdiff_column_two_offset;
         let mut current_width = 0;
-        let mut is_utf8 = false;
-        let iter = s.iter();
-        let input = match String::from_utf8(s.to_vec()) {
-            // third buffer created
-            Ok(s) => {
-                is_utf8 = true;
-                s
-            }
-            Err(_) => String::new(),
-        };
+        let iter = CharIter::from(s);
 
         // the encoding will probably be compatible with utf8, so we can take advantage
         // of that to get the size of the columns and iterate without breaking the encoding of anything.
@@ -131,86 +187,36 @@ impl<'a> LineFormatter<'a> {
         // There is a library called mcel (mcel.h) that is used in GNU diff, but the documentation
         // about it is very scarce, nor is its use documented on the internet. In fact, from my
         // research I didn't even find any information about it in the GNU lib's own documentation.
-        if is_utf8 {
-            // avoiding the creation of chars variables
-            let chars = input.chars();
 
-            for c in chars {
-                let c_width = UnicodeWidthChar::width(c).unwrap_or(1);
-                if current_width + c_width > max_width {
-                    break; // it will never cut a multibyte char
-                }
+        for c in iter {
+            let (char, c_width) = c;
 
-                match c {
-                    '\t' => {
-                        if expanded {
-                            let spaces = tab_size - (current_width % tab_size);
-                            if current_width + spaces <= max_width {
-                                self.buf.extend(vec![b' '; spaces]);
-                                current_width += spaces;
-                            }
-                        } else {
-                            if current_width + tab_size - (current_width % tab_size) <= max_width {
-                                self.buf.push(b'\t');
-                                current_width += tab_size - (current_width % tab_size);
-                            }
-                        }
-                    }
-                    '\n' => {
-                        break;
-                    }
-                    '\r' => {
-                        self.buf.push(b'\r');
-                        self.format_tabs_and_spaces(0, sdiff_column_two_offset);
-                        current_width = 0;
-                    }
-                    '\0' | '\x07' | '\x0C' | '\x0B' => {
-                        self.buf.push(c as u8);
-                    }
-                    _ => {
-                        self.buf.write_all(c.to_string().as_bytes())?;
-                        current_width += c_width;
-                    }
-                }
+            if current_width + c_width > max_width {
+                break;
             }
-        } else {
-            for c in iter {
-                if current_width + 1 > max_width {
-                    break; // maybe can cut the character if it is multibyte
-                }
 
-                match *c {
-                    b'\t' => {
-                        if expanded {
-                            let spaces = tab_size - (current_width % tab_size);
-                            if current_width + spaces <= max_width {
-                                self.buf.extend(vec![b' '; spaces]);
-                                current_width += spaces;
-                            }
-                        } else {
-                            if current_width + tab_size - (current_width % tab_size) <= max_width {
-                                self.buf.push(b'\t');
-                                current_width += tab_size - (current_width % tab_size);
-                            }
-                        }
-                    }
-                    b'\n' => {
-                        break;
-                    }
-                    b'\r' => {
-                        self.buf.push(b'\r');
-                        self.format_tabs_and_spaces(0, sdiff_column_two_offset);
-                        current_width = 0;
-                    }
-                    b'\0' | b'\x07' | b'\x0C' | b'\x0B' => {
-                        // width 0, just print it
-                        self.buf.push(*c);
-                    }
-                    _ => {
-                        self.buf.push(*c);
-                        current_width += 1;
-                    }
+            if char == b"\t" {
+                if expanded && (current_width + tab_size - (current_width % tab_size)) <= max_width
+                {
+                    self.buf
+                        .extend(vec![b' '; tab_size - (current_width % tab_size)]);
+                    current_width += tab_size - (current_width % tab_size);
+                } else if current_width + tab_size - (current_width % tab_size) <= max_width {
+                    self.buf.push(b'\t');
+                    current_width += tab_size - (current_width % tab_size);
                 }
+            } else if char == b"\n" {
+                break;
+            } else if char == b"\r" {
+                self.buf.push(b'\r');
+                self.format_tabs_and_spaces(0, sdiff_column_two_offset);
+                current_width = 0;
+            } else if matches!(char, b"\0" | b"\x07" | b"\x0C" | b"\x0B") {
+                // width 0, just print it
+                self.buf.write_all(char)?;
+            } else {
+                self.buf.write_all(char)?;
+                current_width += c_width;
             }
         }
 
