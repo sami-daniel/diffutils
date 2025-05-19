@@ -74,16 +74,13 @@ impl<'a> Iterator for CharIter<'a> {
 
 impl Config {
     pub fn new(full_width: usize, tab_size: usize, expanded: bool) -> Self {
-        // diff uses this calculation to calculate the size of a half line
-        // based on the options passed (like -w, -t, etc.). It's actually
-        // pretty useless, because we (actually) don't have any size modifiers
-        // that can change this, however I just want to leave the calculate
-        // here, since it's not very clear and may cause some confusion
-
         let w = full_width as isize;
         let t = tab_size as isize;
         let t_plus_g = t + GUTTER_WIDTH_MIN as isize;
         let unaligned_off = (w >> 1) + (t_plus_g >> 1) + (w & t_plus_g & 1);
+        //                  ^ w / (2^1), rounded floor
+        //                             ^ t_plus_g / (2^1), rounded floor
+        //                                               ^ evaluates to 1 if both are odd 
         let off = unaligned_off - unaligned_off % t;
         let hw = max(0, min(off - GUTTER_WIDTH_MIN as isize, w - off)) as usize;
         let c2o = if hw != 0 { off as usize } else { w as usize };
@@ -93,7 +90,7 @@ impl Config {
             sdiff_column_two_offset: c2o,
             tab_size,
             sdiff_half_width: hw,
-            separator_pos: ((hw + c2o - 1) >> 1),
+            separator_pos: ((hw + c2o - 1) >> 1), // (hw + c20 -1) / (2^1)
         }
     }
 }
