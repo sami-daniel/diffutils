@@ -256,16 +256,17 @@ fn push_output<T: Write>(
     let half_width = config.sdiff_half_width;
     let column_two_offset = config.sdiff_column_two_offset;
     let separator_pos = config.separator_pos;
-    let mut put_new_line = false;
+    let put_new_line = true; // should be false when | is allowed
 
-    // this also evolves the separator |, but we can ignore it
-    // at this point, since we don't have the | sep (yet)
-    if !left_ln.is_empty() {
-        put_new_line = put_new_line || (left_ln.last() == Some(&b'\n'));
-    }
-    if !right_ln.is_empty() {
-        put_new_line = put_new_line || (right_ln.last() == Some(&b'\n'));
-    }
+    // this involves a lot of the '|' mark, however, as it is not active,
+    // it is better to deactivate it as it introduces visual bug if
+    // the line is empty.
+    // if !left_ln.is_empty() {
+    //     put_new_line = put_new_line || (left_ln.last() == Some(&b'\n'));
+    // }
+    // if !right_ln.is_empty() {
+    //     put_new_line = put_new_line || (right_ln.last() == Some(&b'\n'));
+    // }
 
     process_half_line(
         left_ln,
@@ -280,7 +281,9 @@ fn push_output<T: Write>(
         // even in the middle space between the gutters if possible.
 
         output.write_all(&[symbol])?;
-        format_tabs_and_spaces(separator_pos + 1, column_two_offset, config, output)?;
+        if !right_ln.is_empty() {
+            format_tabs_and_spaces(separator_pos + 1, column_two_offset, config, output)?;
+        }
     }
     process_half_line(
         right_ln,
