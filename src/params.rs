@@ -743,11 +743,11 @@ mod tests {
                 executable: os("diff"),
                 from: os("foo"),
                 to: os("bar"),
-                tabsize: 0,
+                tabsize: 1,
                 ..Default::default()
             }),
             parse_params(
-                [os("diff"), os("--tabsize=0"), os("foo"), os("bar")]
+                [os("diff"), os("--tabsize=1"), os("foo"), os("bar")]
                     .iter()
                     .cloned()
                     .peekable()
