@@ -1220,7 +1220,7 @@ mod tests {
             let config = create_config(40, 8, true);
             assert_eq!(config.sdiff_half_width, 16);
             assert_eq!(config.sdiff_column_two_offset, 24);
-            assert_eq!(config.separator_pos, 19); // (16 +24 -1) /2 = 19.5 truncado para 19
+            assert_eq!(config.separator_pos, 19); // (16 +24 -1) /2 = 19.5
         }
 
         #[test]
