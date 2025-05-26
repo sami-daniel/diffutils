@@ -960,7 +960,7 @@ mod tests {
     mod diff {
         /*
         Probably this hole section should be refactored when complete sdiff
-        arrives. I would say that these tests are more to document the 
+        arrives. I would say that these tests are more to document the
         behavior of the engine than to actually test whether it is right,
         because it is right, but right up to its limitations.
         */
@@ -1117,7 +1117,7 @@ mod tests {
         fn test_interleaved_add_remove() {
             let params = generate_params();
             let from_file = b"A\nB\nC\nD";
-            let to_file =   b"B\nX\nD\nY";
+            let to_file = b"B\nX\nD\nY";
             let mut output = vec![];
             diff(from_file, to_file, &mut output, &params);
 
@@ -1165,7 +1165,7 @@ mod tests {
             let to_file = b"Same\nNew1\nSameMid\nNew2\nNew3\nSameEnd";
             let mut output = vec![];
             diff(from_file, to_file, &mut output, &params);
-            
+
             assert_eq!(calc_lines(&output), 8);
             assert_eq!(contains_string(&output, "<"), 2);
             assert_eq!(contains_string(&output, ">"), 3);
@@ -1199,14 +1199,14 @@ mod tests {
             assert_eq!(contains_string(&output, ">"), 3);
         }
     }
-    
+
     mod config {
         use super::*;
-    
+
         fn create_config(full_width: usize, tab_size: usize, expanded: bool) -> Config {
             Config::new(full_width, tab_size, expanded)
         }
-    
+
         #[test]
         fn test_full_width_80_tab_4() {
             let config = create_config(80, 4, false);
@@ -1214,7 +1214,7 @@ mod tests {
             assert_eq!(config.sdiff_column_two_offset, 40);
             assert_eq!(config.separator_pos, 38);
         }
-    
+
         #[test]
         fn test_full_width_40_tab_8() {
             let config = create_config(40, 8, true);
@@ -1222,7 +1222,7 @@ mod tests {
             assert_eq!(config.sdiff_column_two_offset, 24);
             assert_eq!(config.separator_pos, 19); // (16 +24 -1) /2 = 19.5 truncado para 19
         }
-    
+
         #[test]
         fn test_full_width_30_tab_2() {
             let config = create_config(30, 2, false);
@@ -1230,7 +1230,7 @@ mod tests {
             assert_eq!(config.sdiff_column_two_offset, 16);
             assert_eq!(config.separator_pos, 14);
         }
-    
+
         #[test]
         fn test_small_width_10_tab_4() {
             let config = create_config(10, 4, false);
@@ -1238,7 +1238,7 @@ mod tests {
             assert_eq!(config.sdiff_column_two_offset, 8);
             assert_eq!(config.separator_pos, 4);
         }
-    
+
         #[test]
         fn test_minimal_width_3_tab_4() {
             let config = create_config(3, 4, false);
@@ -1246,7 +1246,7 @@ mod tests {
             assert_eq!(config.sdiff_column_two_offset, 3);
             assert_eq!(config.separator_pos, 1);
         }
-    
+
         #[test]
         fn test_odd_width_7_tab_3() {
             let config = create_config(7, 3, false);
@@ -1254,7 +1254,7 @@ mod tests {
             assert_eq!(config.sdiff_column_two_offset, 6);
             assert_eq!(config.separator_pos, 3);
         }
-    
+
         #[test]
         fn test_tab_size_larger_than_width() {
             let config = create_config(5, 10, false);
